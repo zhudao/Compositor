@@ -50,7 +50,7 @@ struct DeepLayerTests {
         let deep = try #require(asset.deep, "the layer keeps its 16-bit pixels")
         #expect(deep.bitsPerComponent == 16 && asset.image.bitsPerComponent == 8)
         #expect(Set(try row(deep)).count > 200, "the ramp's fine steps are all there")
-        #expect(session.activeLayer?.depthLabel == "16-Bits")
+        #expect(session.activeLayer?.depthLabel == "16-Bit")
     }
 
     /// Levels stretching the ramp's four steps across the whole range: the 16-bit layer comes out a smooth ramp,
@@ -121,7 +121,7 @@ struct DeepLayerTests {
         let project = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".comp")
         defer { try? FileManager.default.removeItem(at: project) }
         let snapshot = try #require(session.projectSnapshot())
-        #expect(snapshot.manifest.version == 12)
+        #expect(snapshot.manifest.version == ProjectManifest.current)
         try await ProjectStore.shared.save(snapshot, to: project)
         let loaded = try await ProjectStore.shared.load(from: project)
         let after = try #require(loaded.images[id]?.deep, "reopened as a 16-bit layer")
@@ -185,7 +185,7 @@ struct DeepLayerTests {
         await session.finishBrush()
         let asset = try #require(session.activeLayer?.asset)
         #expect(asset.raster != nil && asset.deep != nil, "painted, and still 16-bit")
-        #expect(session.activeLayer?.depthLabel == "16-Bits")
+        #expect(session.activeLayer?.depthLabel == "16-Bit")
         let whole = try #require(try DeepLayer.flattened(asset))
         let values = try row(whole)
         #expect(values[15] > values[200], "the stroke is in: red painted at the left")
@@ -401,10 +401,355 @@ struct DeepLayerTests {
             together = max(together, try bends(plain, channel: channel))
             wobble = max(wobble, try bends(preview, channel: channel))
         }
-        // No more than the preview's own (its average is random: some leeway), and well under the bands it had.
-        #expect(smooth < wobble * 1.5 && smooth < together / 3,
+        // Near the preview's own (whose average is random, so a fixed bound), and well under the bands it had.
+        #expect(smooth < 0.45 && smooth < together / 3,
                 "bends of \(smooth) steps, \(together) with the channels stepped together, \(wobble) in the preview")
         #expect(try row(mixed) != row(ramp), "saturated")
+    }
+
+    /// Convert to 16-Bit on a blank layer gives it clear 16-bit pixels; a gradient drawn on it then comes out at 16 bits,
+    /// where 8 bits could only hold a few levels of a gentle one. Convert to 8-Bit dithers it back down, and undo returns.
+    @Test func blankLayersConvertToSixteenBitsForSmoothGradients() async throws {
+        let session = EditorSession()
+        session.createDocument(width: Self.width, height: Self.height)
+        session.addBlankLayer()
+        #expect(session.activeLayer?.asset == nil && session.canConvertLayerDepth)
+        session.convertLayerDepth()
+        #expect(session.activeLayer?.depthLabel == "16-Bit")
+        // A gentle gradient: black to a dark gray, only 16 8-bit levels across the canvas.
+        session.foregroundColor = .black
+        session.backgroundColor = PaletteColor(red: 16 / 255, green: 16 / 255, blue: 16 / 255)
+        session.selectTool(.gradient)
+        session.gradientSettings.style = .foregroundToBackground
+        session.beginGradient(at: CGPoint(x: 0.5, y: 4))
+        session.moveGradient(end: CGPoint(x: Double(Self.width) - 0.5, y: 4))
+        session.endGradientDrag()
+        await session.commitGradient()
+        let asset = try #require(session.activeLayer?.asset)
+        let deep = try #require(try DeepLayer.flattened(asset), "the gradient kept the layer 16-bit")
+        let values = try row(deep)
+        #expect(Set(values).count > 100, "a smooth gradient: \(Set(values).count) distinct values, not 16 levels")
+        session.convertLayerDepth()
+        #expect(session.activeLayer?.asset?.deep == nil && session.activeLayer?.depthLabel == nil)
+        session.undo()
+        #expect(session.activeLayer?.asset?.deep != nil, "undo brings the 16 bits back")
+    }
+
+    /// An 8-bit layer converted to 16 bits keeps its pixels exactly; a steep Levels afterwards is then worked at 16 bits.
+    @Test func eightBitLayersConvertToSixteenBits() async throws {
+        let (session, url) = try await importedSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        session.convertLayerDepth()
+        let eight = try #require(session.activeLayer?.asset)
+        #expect(eight.deep == nil)
+        session.convertLayerDepth()
+        let sixteen = try #require(session.activeLayer?.asset)
+        let deep = try #require(sixteen.deep)
+        #expect(try row(deep) == row(try DeepLayer.image(eight.image)), "the same pixels, now 16-bit")
+    }
+
+    // MARK: HDR
+
+    /// An OpenEXR file as a render saves one: linear light, a gray ramp left to right with the right half rising past
+    /// white to `peak` times as bright.
+    private func exr(peak: Float) throws -> URL {
+        let width = Self.width, height = Self.height
+        var floats = [Float](repeating: 1, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let value = Float(x) / Float(width - 1) * peak, i = (y * width + x) * 4
+                floats[i] = value; floats[i + 1] = value; floats[i + 2] = value
+            }
+        }
+        let data = floats.withUnsafeBufferPointer { Data(buffer: $0) }
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue)
+        let image = try #require(CGImage(width: width, height: height, bitsPerComponent: 32, bitsPerPixel: 128, bytesPerRow: width * 16,
+            space: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!, bitmapInfo: info, provider: provider, decode: nil,
+            shouldInterpolate: false, intent: .defaultIntent))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".exr")
+        let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, UTType.openEXR.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        return url
+    }
+
+    /// The brightest value in a layer's HDR pixels (1 is white).
+    private func peak(_ deep: CGImage) throws -> Float {
+        let context = try DeepLayer.hdr(deep)
+        let data = try #require(context.data)
+        return withExtendedLifetime(context) {
+            deep_half_peak(data.assumingMemoryBound(to: UInt16.self), context.bytesPerRow, deep.width, deep.height)
+        }
+    }
+
+    /// A render brighter than white comes in as an HDR layer: its highlights kept, shown as plain white.
+    @Test func exrHighlightsComeInAsAnHDRLayer() async throws {
+        let url = try exr(peak: 4)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = EditorSession()
+        await session.importImages([url])
+        let layer = try #require(session.activeLayer)
+        let asset = try #require(layer.asset)
+        #expect(asset.isHDR && layer.depthLabel == "HDR")
+        // Linear 4 is about 1.8 in extended sRGB's gamma-encoded terms.
+        let brightest = try peak(try #require(asset.deep))
+        #expect(brightest > 1.5, "highlights kept: \(brightest)")
+        #expect(try row(asset.image).last! == 65535, "shown as white")
+    }
+
+    /// Floats that never pass white are an ordinary 16-bit layer.
+    @Test func exrWithinWhiteComesInAsSixteenBits() async throws {
+        let url = try exr(peak: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = EditorSession()
+        await session.importImages([url])
+        let asset = try #require(session.activeLayer?.asset)
+        #expect(asset.deep != nil && !asset.isHDR && session.activeLayer?.depthLabel == "16-Bit")
+    }
+
+    /// Saved, an HDR layer is an EXR in the project, and comes back with its highlights; older versions can't hold one.
+    @Test func hdrLayersSaveAsEXRAndReopen() async throws {
+        let url = try exr(peak: 4)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = EditorSession()
+        await session.importImages([url])
+        let id = try #require(session.activeLayerID)
+        let before = try peak(try #require(session.activeLayer?.asset?.deep))
+        let snapshot = try #require(session.projectSnapshot())
+        #expect(snapshot.manifest.layers.first?.imageFile == "\(id.uuidString).exr")
+        let project = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".comp")
+        defer { try? FileManager.default.removeItem(at: project) }
+        try await ProjectStore.shared.save(snapshot, to: project)
+        let loaded = try await ProjectStore.shared.load(from: project)
+        let asset = try #require(loaded.images[id])
+        #expect(asset.isHDR)
+        let after = try peak(try #require(asset.deep))
+        #expect(abs(after - before) < 0.01, "highlights kept: \(before) then \(after)")
+        var older = snapshot.manifest
+        older.version = 12
+        await #expect(throws: (any Error).self) { try await ProjectStore.shared.save(ProjectSnapshot(manifest: older, images: snapshot.images), to: project) }
+    }
+
+    /// An imported HDR render (linear light up to 4× white), with its brightest value.
+    private func hdrSession() async throws -> (EditorSession, URL, Float) {
+        let url = try exr(peak: 4)
+        let session = EditorSession()
+        await session.importImages([url])
+        return (session, url, try peak(try #require(session.activeLayer?.asset?.deep)))
+    }
+
+    /// Exposure turned down on an HDR layer works on its full range exactly: the highlights come down into view rather
+    /// than having been clipped. One stop down, linear 4 becomes 2: still brighter than white.
+    @Test func exposureBringsHighlightsIntoView() async throws {
+        let (session, url, before) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        session.beginFilter(.exposure)
+        var settings = FilterSettings()
+        settings.exposure.exposure = -1
+        session.updateFilter(settings, preview: true)
+        await session.commitFilter()
+        let asset = try #require(session.activeLayer?.asset)
+        #expect(asset.isHDR, "still brighter than white")
+        let after = try peak(try #require(asset.deep))
+        // Linear 2 in extended sRGB's encoding (white is 1).
+        let expected = Float(1.055 * pow(2, 1 / 2.4) - 0.055)
+        #expect(abs(after - expected) < 0.01, "linear 4 to 2: \(before) became \(after), expected \(expected)")
+        // Part of what showed as white now shows: values between 1 and 2 times white came down within it.
+        let shown = try row(asset.image)
+        #expect(shown.filter { $0 == 65535 }.count < Self.width / 2, "fewer pixels at white")
+    }
+
+    /// Levels pulling white down dims an HDR layer's highlights in proportion rather than clipping them.
+    @Test func levelsDimsHighlightsInProportion() async throws {
+        let (session, url, before) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        session.beginLevels()
+        var settings = LevelsSettings()
+        settings.ranges[0].outputWhite = 127.5
+        session.updateLevels(settings, preview: true)
+        await session.commitLevels()
+        let after = try peak(try #require(session.activeLayer?.asset?.deep))
+        #expect(abs(after - before / 2) < 0.02, "halved: \(before) became \(after)")
+    }
+
+    /// Blur, Hue/Saturation, a brush stroke and a merge all keep an HDR layer HDR, its highlights where they were.
+    @Test func editsKeepHDRLayersHDR() async throws {
+        let (session, url, before) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        func kept(_ step: String) throws {
+            let asset = try #require(session.activeLayer?.asset)
+            #expect(asset.isHDR, "\(step) kept the layer HDR")
+            let now = try peak(try #require(asset.deep))
+            #expect(abs(now - before) < 0.05, "\(step) kept the highlights: \(before) became \(now)")
+        }
+        session.beginFilter(.gaussianBlur)
+        session.updateFilter(FilterSettings(radius: 1), preview: true)
+        await session.commitFilter()
+        try kept("Gaussian Blur")
+        session.beginHueSaturation()
+        session.updateHueSaturation(HueSaturationSettings(saturation: 40), preview: true)
+        await session.commitHueSaturation()
+        try kept("Hue/Saturation")
+        session.selectTool(.brush)
+        session.brushSettings = BrushSettings(diameter: 4, hardness: 1, red: 0, green: 0, blue: 0)
+        session.beginBrush(at: CGPoint(x: 10, y: 4))
+        session.continueBrush(at: CGPoint(x: 14, y: 4))
+        await session.finishBrush()
+        try kept("painting")
+        session.addBlankLayer()
+        session.beginBrush(at: CGPoint(x: 20, y: 4))
+        session.continueBrush(at: CGPoint(x: 24, y: 4))
+        await session.finishBrush()
+        session.mergeLayers()
+        try kept("merging")
+    }
+
+    /// A blur's preview on an HDR layer is made from its HDR pixels, as OK makes the result, so the two look the same:
+    /// made from the copy clipped to white, the preview's glow was far fainter than the one OK left.
+    @Test(arguments: [FilterKind.gaussianBlur, .motionBlur])
+    func hdrBlurPreviewsMatchTheResult(kind: FilterKind) async throws {
+        let (session, url, _) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        session.beginFilter(kind)
+        var settings = FilterSettings(radius: 6)
+        settings.distance = 20
+        session.updateFilter(settings, preview: true)
+        let edit = try #require(session.filterEdit)
+        let hdr = try #require(edit.hdrPreviewSource, "previewed from the HDR pixels")
+        let preview = try DeepLayer.dithered(try PixelFilter.previewHDR(edit.previewJob, from: hdr))
+        let clipped = try DeepLayer.image(try PixelFilter.run(edit.previewJob))
+        await session.commitFilter()
+        let result = try #require(session.activeLayer?.asset?.image)
+        #expect(preview.width == result.width && preview.height == result.height)
+        func mean(_ a: CGImage, _ b: CGImage) throws -> Double {
+            let x = try row(a), y = try row(b)
+            return zip(x, y).map { abs(Double($0) - Double($1)) }.reduce(0, +) / Double(x.count) / 257
+        }
+        let matched = try mean(preview, result), before = try mean(clipped, result)
+        #expect(matched < 1.5 && matched < before / 3, "\(kind): \(matched) steps off the result, \(before) from the clipped copy")
+    }
+
+    /// Exported as EXR, an HDR document keeps its highlights; an Exposure adjustment layer over it works on them exactly.
+    @Test func hdrDocumentsExportAsEXR() async throws {
+        let (session, url, before) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        func exported() async throws -> Float {
+            let snapshot = try #require(session.projectSnapshot())
+            let raster = try await ImageExporter.shared.render(snapshot, sixteenBit: true, hdr: true)
+            let data = try await ImageExporter.shared.exrData(raster)
+            let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+            #expect(CGImageSourceGetType(source) as String? == UTType.openEXR.identifier)
+            return try peak(try #require(CGImageSourceCreateImageAtIndex(source, 0, nil)))
+        }
+        let whole = try await exported()
+        #expect(abs(whole - before) < 0.02, "highlights kept: \(before) exported as \(whole)")
+        session.addAdjustment(.exposure)
+        let id = try #require(session.activeLayerID)
+        var adjustment = try #require(session.activeLayer?.adjustment)
+        adjustment.exposure.exposure = -1
+        session.updateAdjustment(id, value: adjustment)
+        let dimmed = try await exported()
+        let expected = Float(1.055 * pow(2, 1 / 2.4) - 0.055)
+        #expect(abs(dimmed - expected) < 0.02, "one stop down: linear 4 to 2, \(dimmed) against \(expected)")
+    }
+
+    /// The canvas's adjustments over an HDR layer keep what's brighter than white, as a merge or export does: Exposure
+    /// works on the full range, and Levels dims a highlight in proportion. Transparency is left as it was.
+    @Test @MainActor func gpuAdjustmentsKeepHighlights() throws {
+        guard let renderer = GPUCanvasRenderer.shared else { return }
+        // Linear 2 (encoded about 1.35), opaque; and a half-transparent mid gray.
+        let bright = Float(1.055 * pow(2, 1 / 2.4) - 0.055)
+        func pixel(_ value: Float, alpha: Float) -> CIImage {
+            // A CIColor's components are straight, not premultiplied.
+            CIImage(color: CIColor(red: CGFloat(value), green: CGFloat(value), blue: CGFloat(value),
+                                   alpha: CGFloat(alpha), colorSpace: DeepLayer.hdrSpace)!).cropped(to: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        func read(_ image: CIImage) -> [Float] {
+            var out = [Float](repeating: 0, count: 4)
+            renderer.context.render(image, toBitmap: &out, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                    format: .RGBAf, colorSpace: DeepLayer.hdrSpace)
+            return out
+        }
+        var exposure = LayerAdjustment(kind: .exposure)
+        exposure.exposure.exposure = -1
+        let dimmed = try #require(GPUAdjustment.apply(exposure, to: pixel(bright, alpha: 1), scale: 1, mapping: .identity, hdr: true))
+        #expect(abs(read(dimmed)[0] - 1) < 0.01, "linear 2 one stop down is white: \(read(dimmed))")
+        var levels = LayerAdjustment(kind: .levels)
+        levels.levels.ranges[0].outputWhite = 127.5
+        let halved = try #require(GPUAdjustment.apply(levels, to: pixel(bright, alpha: 1), scale: 1, mapping: .identity, hdr: true))
+        #expect(abs(read(halved)[0] - bright / 2) < 0.01, "a highlight halved: \(read(halved))")
+        let soft = try #require(GPUAdjustment.apply(levels, to: pixel(0.5, alpha: 0.5), scale: 1, mapping: .identity, hdr: true))
+        let values = read(soft)
+        #expect(abs(values[3] - 0.5) < 0.01 && abs(values[0] - 0.125) < 0.01, "coverage kept, color halved: \(values)")
+    }
+
+    /// The canvas draws an HDR layer from its own pixels, uploaded as half floats: its highlights reach the GPU.
+    @Test @MainActor func hdrLayersReachTheCanvasWithTheirHighlights() async throws {
+        guard let renderer = GPUCanvasRenderer.shared else { return }
+        let (session, url, before) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let asset = try #require(session.activeLayer?.asset)
+        let shown = try #require(DeepLayer.canvasImage(asset))
+        let texture = try #require(renderer.image(shown))
+        var out = [Float](repeating: 0, count: 4)
+        // The ramp's brightest column, at the right.
+        renderer.context.render(texture, toBitmap: &out, rowBytes: 16,
+                                bounds: CGRect(x: shown.width - 1, y: 0, width: 1, height: 1), format: .RGBAf, colorSpace: DeepLayer.hdrSpace)
+        #expect(abs(out[0] - before) < 0.02, "the brightest value \(before) reached the GPU as \(out[0])")
+    }
+
+    /// An HDR layer converts to 16 bits: clipped to white, then a 16-bit layer; undo brings the HDR back.
+    @Test func hdrLayersConvertToSixteenBits() async throws {
+        let (session, url, _) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        session.convertHDRToSixteenBit()
+        let asset = try #require(session.activeLayer?.asset)
+        #expect(asset.deep != nil && !asset.isHDR && session.activeLayer?.depthLabel == "16-Bit")
+        #expect(try row(try #require(asset.deep)).last == 65535, "highlights clipped to white")
+        session.undo()
+        #expect(session.activeLayer?.asset?.isHDR == true)
+    }
+
+    /// The canvas draws a 16-bit layer from its 16-bit pixels too (a 16-bit texture), so an adjustment layer over it
+    /// previews smooth, as it will export, rather than working on the dithered 8-bit copy.
+    @Test @MainActor func sixteenBitLayersReachTheCanvasAtSixteenBits() async throws {
+        guard let renderer = GPUCanvasRenderer.shared else { return }
+        let (session, url) = try await importedSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let asset = try #require(session.activeLayer?.asset)
+        let shown = try #require(DeepLayer.canvasImage(asset))
+        let texture = try #require(renderer.image(shown))
+        let expected = try row(shown)
+        var out = [Float](repeating: 0, count: Self.width * 4)
+        renderer.context.render(texture, toBitmap: &out, rowBytes: Self.width * 16,
+                                bounds: CGRect(x: 0, y: 0, width: Self.width, height: 1), format: .RGBAf,
+                                colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+        var worst = 0.0
+        for x in 0..<Self.width { worst = max(worst, abs(Double(out[x * 4]) * 65535 - Double(expected[x]))) }
+        #expect(worst < 26, "within a tenth of an 8-bit step of the layer's own: worst \(worst / 257) steps")
+    }
+
+    /// The canvas dithers on its way to the 8-bit screen when a document has 16-bit or HDR layers: a tone between two
+    /// levels comes out a mix of both rather than rounded into a band, and a tone on a level (all of an 8-bit image) comes
+    /// out exactly itself.
+    @Test @MainActor func theScreenIsDitheredNotRounded() throws {
+        guard let renderer = GPUCanvasRenderer.shared else { return }
+        func shown(_ level: Double) -> [UInt8] {
+            let gray = CIImage(color: CIColor(red: level / 255, green: level / 255, blue: level / 255, alpha: 1,
+                                              colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)!)
+                .cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+            var out = [UInt8](repeating: 0, count: 64 * 64 * 4)
+            renderer.context.render(GPUCanvasRenderer.dithered(gray), toBitmap: &out, rowBytes: 64 * 4,
+                                    bounds: CGRect(x: 0, y: 0, width: 64, height: 64), format: .RGBA8,
+                                    colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+            return stride(from: 0, to: out.count, by: 4).map { out[$0] }
+        }
+        #expect(Set(shown(100)) == [100], "a tone on a level is left exactly as it is")
+        let between = shown(100.5)
+        let high = Double(between.filter { $0 == 101 }.count) / Double(between.count)
+        #expect(Set(between) == [100, 101] && abs(high - 0.5) < 0.15, "halfway: half of each, \(Int(high * 100))% up")
     }
 
     /// A version-11 project can't carry 16-bit pixels: older builds would misread them.
@@ -415,7 +760,7 @@ struct DeepLayerTests {
         defer { try? FileManager.default.removeItem(at: project) }
         try await ProjectStore.shared.save(try #require(session.projectSnapshot()), to: project)
         let manifest = project.appendingPathComponent("manifest.json")
-        let text = try String(contentsOf: manifest, encoding: .utf8).replacingOccurrences(of: "\"version\" : 12", with: "\"version\" : 11")
+        let text = try String(contentsOf: manifest, encoding: .utf8).replacingOccurrences(of: "\"version\" : \(ProjectManifest.current)", with: "\"version\" : 11")
         try text.write(to: manifest, atomically: true, encoding: .utf8)
         await #expect(throws: (any Error).self) { try await ProjectStore.shared.load(from: project) }
     }

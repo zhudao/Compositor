@@ -52,8 +52,8 @@ extension EditorSession {
             var deepSoft: CIImage?
             deepRender = { part in
                 if deepSoft == nil {
-                    guard let deep = try? DeepLayer.flattened(asset), let wide = try? DeepLayer.context(width: width, height: height)
-                    else { return nil }
+                    guard let deep = try? DeepLayer.flattened(asset),
+                          let wide = try? DeepLayer.context(width: width, height: height, hdr: DeepLayer.isHDR(deep)) else { return nil }
                     BrushRaster.draw(deep, in: placed, mask: false, context: wide)
                     guard let sharp = wide.makeImage() else { return nil }
                     deepSoft = CIImage(cgImage: sharp).applyingGaussianBlur(sigma: sigma * fit).cropped(to: extent)
@@ -61,7 +61,7 @@ extension EditorSession {
                 guard let deepSoft else { return nil }
                 return DeepLayer.ciContext.createCGImage(deepSoft, from: CGRect(x: part.minX, y: CGFloat(height) - part.maxY,
                                                                                   width: part.width, height: part.height),
-                    format: .RGBA16, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+                    format: asset.isHDR ? .RGBAh : .RGBA16, colorSpace: asset.isHDR ? DeepLayer.hdrSpace : CGColorSpace(name: CGColorSpace.sRGB)!)
             }
         }
         if let deepRender {

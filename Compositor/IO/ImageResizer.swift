@@ -50,15 +50,10 @@ actor ImageResizer {
                 usedPixels += width * height
                 guard let source = snapshot.images[layer.id] else { throw ProjectError.missingImage }
                 let asset = try autoreleasepool {
-                    // A 16-bit layer is resampled from its 16-bit pixels, at 16 bits (`DeepLayer`).
+                    // A 16-bit or HDR layer is resampled from its own pixels, at their depth (`DeepLayer`).
                     let deep = try DeepLayer.flattened(source)
-                    guard let context = CGContext(data: nil, width: width, height: height,
-                        bitsPerComponent: deep == nil ? 8 : 16, bytesPerRow: width * (deep == nil ? 4 : 8),
-                        space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-                            | (deep == nil ? 0 : CGBitmapInfo.byteOrder16Little.rawValue)) else { throw ExportError.render }
-                    context.translateBy(x: 0, y: CGFloat(height))
-                    context.scaleBy(x: 1, y: -1)
+                    let context = try deep.map { try DeepLayer.context(width: width, height: height, hdr: DeepLayer.isHDR($0)) }
+                        ?? BrushRaster.context(width: width, height: height, mask: false)
                     context.translateBy(x: -left, y: -top)
                     context.scaleBy(x: sx, y: sy)
                     var sourceTransform = layer.transform

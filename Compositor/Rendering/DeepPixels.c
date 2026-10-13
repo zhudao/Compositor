@@ -201,3 +201,163 @@ void deep_cube_apply(uint16_t *pixels, size_t stride, size_t width, size_t heigh
         }
     });
 }
+
+// A half float's value (IEEE 754 binary16), portably: Intel builds have no half type to lean on.
+static inline float deep_half(uint16_t bits) {
+    uint32_t sign = (uint32_t)(bits >> 15) << 31, exponent = (bits >> 10) & 0x1f, mantissa = bits & 0x3ff;
+    union { uint32_t u; float f; } out;
+    if (exponent == 0) {
+        // Zero or subnormal: mantissa × 2⁻²⁴.
+        float value = (float)mantissa * (1.0f / 16777216.0f);
+        return sign ? -value : value;
+    }
+    if (exponent == 31) out.u = sign | 0x7f800000u | (mantissa << 13);
+    else out.u = sign | ((exponent + 112) << 23) | (mantissa << 13);
+    return out.f;
+}
+
+float deep_half_peak(const uint16_t *pixels, size_t stride, size_t width, size_t height) {
+    float peak = 0;
+    for (size_t y = 0; y < height; ++y) {
+        const uint16_t *row = (const uint16_t *)((const uint8_t *)pixels + y * stride);
+        for (size_t x = 0; x < width; ++x) {
+            const uint16_t *p = row + x * 4;
+            float alpha = deep_half(p[3]);
+            if (!(alpha > 0)) continue;
+            for (int c = 0; c < 3; ++c) {
+                float value = deep_half(p[c]) / alpha;
+                if (value > peak && value < INFINITY) peak = value;
+            }
+        }
+    }
+    return peak;
+}
+
+// A float as a half float's bits (IEEE 754 binary16, rounded to nearest), portably.
+static inline uint16_t deep_to_half(float value) {
+    union { float f; uint32_t u; } in = { value };
+    uint32_t sign = (in.u >> 16) & 0x8000, exponent = (in.u >> 23) & 0xff, mantissa = in.u & 0x7fffff;
+    if (exponent == 0xff) return (uint16_t)(sign | 0x7c00 | (mantissa ? 0x200 : 0));
+    int e = (int)exponent - 127 + 15;
+    if (e >= 31) return (uint16_t)(sign | 0x7c00);
+    if (e <= 0) {
+        // Subnormal or zero.
+        if (e < -10) return (uint16_t)sign;
+        mantissa |= 0x800000;
+        uint32_t shift = (uint32_t)(14 - e);
+        uint32_t half = mantissa >> shift, rest = mantissa & ((1u << shift) - 1), halfway = 1u << (shift - 1);
+        if (rest > halfway || (rest == halfway && (half & 1))) half += 1;
+        return (uint16_t)(sign | half);
+    }
+    uint32_t half = sign | ((uint32_t)e << 10) | (mantissa >> 13), rest = mantissa & 0x1fff;
+    if (rest > 0x1000 || (rest == 0x1000 && (half & 1))) half += 1;
+    return (uint16_t)half;
+}
+
+void deep_hdr_normalize(const uint16_t *hdr, size_t hdrStride, uint16_t *out, size_t outStride, float *scales,
+                        size_t width, size_t height) {
+    deep_rows(height, ^(size_t first, size_t last) {
+        for (size_t y = first; y < last; ++y) {
+            const uint16_t *in = (const uint16_t *)((const uint8_t *)hdr + y * hdrStride);
+            uint16_t *o = (uint16_t *)((uint8_t *)out + y * outStride);
+            for (size_t x = 0; x < width; ++x) {
+                const uint16_t *p = in + x * 4;
+                float alpha = fminf(1, fmaxf(0, deep_half(p[3]))), color[3], brightest = 0;
+                for (int c = 0; c < 3; ++c) {
+                    color[c] = alpha > 0 ? fmaxf(0, deep_half(p[c]) / alpha) : 0;
+                    if (color[c] > brightest && color[c] < INFINITY) brightest = color[c];
+                }
+                float scale = brightest > 1 ? brightest : 1;
+                scales[y * width + x] = scale;
+                for (int c = 0; c < 3; ++c) o[x * 4 + c] = (uint16_t)lroundf(fminf(1, color[c] / scale) * alpha * 65535.0f);
+                o[x * 4 + 3] = (uint16_t)lroundf(alpha * 65535.0f);
+            }
+        }
+    });
+}
+
+void deep_hdr_restore(const uint16_t *normal, size_t normalStride, const float *scales, uint16_t *hdr, size_t hdrStride,
+                      size_t width, size_t height) {
+    deep_rows(height, ^(size_t first, size_t last) {
+        for (size_t y = first; y < last; ++y) {
+            const uint16_t *in = (const uint16_t *)((const uint8_t *)normal + y * normalStride);
+            uint16_t *o = (uint16_t *)((uint8_t *)hdr + y * hdrStride);
+            for (size_t x = 0; x < width; ++x) {
+                const uint16_t *p = in + x * 4;
+                // Premultiplied colors scale with their alpha: the brightness factor applies to them as they are.
+                float scale = scales[y * width + x];
+                for (int c = 0; c < 3; ++c) o[x * 4 + c] = deep_to_half((float)p[c] / 65535.0f * scale);
+                o[x * 4 + 3] = deep_to_half((float)p[3] / 65535.0f);
+            }
+        }
+    });
+}
+
+// sRGB's curve, carried on past white (and mirrored below black) as extended sRGB does.
+static inline float deep_linear(float encoded) {
+    float magnitude = fabsf(encoded);
+    float linear = magnitude <= 0.04045f ? magnitude / 12.92f : powf((magnitude + 0.055f) / 1.055f, 2.4f);
+    return encoded < 0 ? -linear : linear;
+}
+static inline float deep_encoded(float linear) {
+    float magnitude = fabsf(linear);
+    float encoded = magnitude <= 0.0031308f ? magnitude * 12.92f : 1.055f * powf(magnitude, 1 / 2.4f) - 0.055f;
+    return linear < 0 ? -encoded : encoded;
+}
+
+void deep_hdr_exposure(uint16_t *hdr, size_t stride, size_t width, size_t height, float scale, float offset, float inverseGamma) {
+    deep_rows(height, ^(size_t first, size_t last) {
+        for (size_t y = first; y < last; ++y) {
+            uint16_t *p = (uint16_t *)((uint8_t *)hdr + y * stride);
+            for (size_t x = 0; x < width; ++x, p += 4) {
+                float alpha = deep_half(p[3]);
+                if (!(alpha > 0)) continue;
+                for (int c = 0; c < 3; ++c) {
+                    float linear = fmaxf(0, deep_linear(deep_half(p[c]) / alpha) * scale + offset);
+                    p[c] = deep_to_half(deep_encoded(powf(linear, inverseGamma)) * alpha);
+                }
+            }
+        }
+    });
+}
+
+void deep_take_painted_hdr(uint16_t *hdr, size_t hdrStride, const uint8_t *painted, const uint8_t *base, size_t stride,
+                           size_t width, size_t height) {
+    deep_rows(height, ^(size_t first, size_t last) {
+        for (size_t y = first; y < last; ++y) {
+            uint16_t *d = (uint16_t *)((uint8_t *)hdr + y * hdrStride);
+            const uint8_t *p = painted + y * stride, *b = base + y * stride;
+            for (size_t x = 0; x < width * 4; x += 4) {
+                if (p[x] == b[x] && p[x + 1] == b[x + 1] && p[x + 2] == b[x + 2] && p[x + 3] == b[x + 3]) continue;
+                for (int c = 0; c < 4; ++c) d[x + c] = deep_to_half((float)p[x + c] / 255.0f);
+            }
+        }
+    });
+}
+
+void deep_extract_alpha_hdr(uint16_t *rgba, size_t stride, float *alpha, size_t width, size_t height) {
+    deep_rows(height, ^(size_t first, size_t last) {
+        for (size_t y = first; y < last; ++y) {
+            uint16_t *p = (uint16_t *)((uint8_t *)rgba + y * stride);
+            for (size_t x = 0; x < width; ++x, p += 4) {
+                float a = deep_half(p[3]);
+                alpha[y * width + x] = a;
+                for (int c = 0; c < 3; ++c) p[c] = deep_to_half(a > 0 ? deep_half(p[c]) / a : 0);
+                p[3] = deep_to_half(1);
+            }
+        }
+    });
+}
+
+void deep_restore_alpha_hdr(uint16_t *rgba, size_t stride, const float *alpha, size_t width, size_t height) {
+    deep_rows(height, ^(size_t first, size_t last) {
+        for (size_t y = first; y < last; ++y) {
+            uint16_t *p = (uint16_t *)((uint8_t *)rgba + y * stride);
+            for (size_t x = 0; x < width; ++x, p += 4) {
+                float a = alpha[y * width + x];
+                for (int c = 0; c < 3; ++c) p[c] = deep_to_half(deep_half(p[c]) * a);
+                p[3] = deep_to_half(a);
+            }
+        }
+    });
+}

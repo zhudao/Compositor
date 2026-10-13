@@ -57,7 +57,7 @@ final class WarpStroke {
         width = Int(canvas.width); height = Int(canvas.height)
         var gpu: MetalWarp?
         if useGPU, let deep, MetalWarp.pipelines != nil {
-            let wide = try DeepLayer.context(width: width, height: height)
+            let wide = try DeepLayer.context(width: width, height: height, hdr: DeepLayer.isHDR(deep))
             LayerRenderer.draw(deep, transform: transform, center: transform.center, in: wide)
             gpu = MetalWarp(pixels: wide)
             context = wide

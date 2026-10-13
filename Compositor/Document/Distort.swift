@@ -116,7 +116,7 @@ nonisolated enum DistortWarp {
             "inputTopLeft": vector(target.topLeft), "inputTopRight": vector(target.topRight),
             "inputBottomRight": vector(target.bottomRight), "inputBottomLeft": vector(target.bottomLeft),
         ])
-        if sixteenBit, !isMask { return (try DeepLayer.render(warped, width: width, height: height), placed) }
+        if sixteenBit, !isMask { return (try DeepLayer.render(warped, width: width, height: height, hdr: DeepLayer.isHDR(image)), placed) }
         return (try PixelAdjust.render(warped, width: width, height: height, isMask: isMask), placed)
     }
 
@@ -125,7 +125,7 @@ nonisolated enum DistortWarp {
     private static func warpFolded(_ image: CGImage, target: (topLeft: CGPoint, topRight: CGPoint, bottomRight: CGPoint, bottomLeft: CGPoint),
                                    bounds: CGRect, factor: CGFloat, width: Int, height: Int, isMask: Bool,
                                    sixteenBit: Bool = false) throws -> CGImage {
-        let context = sixteenBit && !isMask ? try DeepLayer.context(width: width, height: height)
+        let context = sixteenBit && !isMask ? try DeepLayer.context(width: width, height: height, hdr: DeepLayer.isHDR(image))
                                             : try BrushRaster.context(width: width, height: height, mask: isMask)
         let source = CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height))
         let corners = (topLeft: CGPoint(x: source.minX, y: source.minY), topRight: CGPoint(x: source.maxX, y: source.minY),

@@ -41,6 +41,12 @@ struct LayersPanel: View {
                     .help("Group selected layers (⌘G)").accessibilityLabel("New folder").disabled(!session.layersLookEditable)
                 LayerMaskMenu(session: session)
                 Menu {
+                    ForEach(AdjustmentKind.allCases, id: \.self) { kind in
+                        Button(kind.rawValue) { session.addAdjustment(kind) }
+                    }
+                } label: { Image(systemName: "circle.lefthalf.filled").footerHitArea() }
+                    .menuStyle(.borderlessButton).fixedSize().help("New adjustment layer").disabled(!session.layersLookEditable)
+                Menu {
                     ForEach(LayerEffectKind.allCases, id: \.self) { kind in
                         Button(kind.rawValue + "…") { session.addEffect(kind) }
                     }
@@ -48,12 +54,6 @@ struct LayersPanel: View {
                     .menuStyle(.borderlessButton).fixedSize()
                     .help("Add layer effect").accessibilityLabel("Layer effects")
                     .accessibilityIdentifier("layerEffects").disabled(!session.layersLookEditable || session.activeLayer?.isGroup != false || session.activeLayer?.asset == nil)
-                Menu {
-                    ForEach(AdjustmentKind.allCases, id: \.self) { kind in
-                        Button(kind.rawValue) { session.addAdjustment(kind) }
-                    }
-                } label: { Image(systemName: "circle.lefthalf.filled").footerHitArea() }
-                    .menuStyle(.borderlessButton).fixedSize().help("New adjustment layer").disabled(!session.layersLookEditable)
                 Spacer()
                 Button { session.deleteLayerOrMask() } label: { FooterIcon(systemName: "trash") }
                     .help(session.selectedEffect != nil ? "Delete selected effect" : session.isMaskSelected ? "Delete layer mask" : session.selectedLayerIDs.count > 1 ? "Delete selected layers" : "Delete selected layer")

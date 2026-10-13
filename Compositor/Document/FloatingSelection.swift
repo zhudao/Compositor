@@ -141,7 +141,9 @@ nonisolated enum FloatingMerge {
         let extent = original.union(floatingBounds).integral
         guard extent.width <= DocumentLimits.maxSideExtent, extent.height <= DocumentLimits.maxSideExtent, extent.width * extent.height <= DocumentLimits.maxSurfaceExtent
         else { throw ProjectError.tooLarge }
-        let context = sixteenBit ? try DeepLayer.context(width: Int(extent.width), height: Int(extent.height))
+        // An HDR layer, or HDR pixels going in, keep light brighter than white.
+        let hdr = sourceDeep.map(DeepLayer.isHDR) == true || DeepLayer.isHDR(pixels)
+        let context = sixteenBit ? try DeepLayer.context(width: Int(extent.width), height: Int(extent.height), hdr: hdr)
                                  : try BrushRaster.context(width: Int(extent.width), height: Int(extent.height), mask: false)
         let placed = original.offsetBy(dx: -extent.minX, dy: -extent.minY)
         BrushRaster.draw(sourceImage, in: placed, mask: false, context: context)

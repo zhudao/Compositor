@@ -43,7 +43,7 @@ nonisolated enum PixelAdjust {
         let blended = CIImage(cgImage: adjusted).applyingFilter("CIBlendWithMask", parameters: [
             kCIInputBackgroundImageKey: CIImage(cgImage: original),
             kCIInputMaskImageKey: CIImage(cgImage: mask)])
-        if sixteenBit { return try DeepLayer.render(blended, width: width, height: height) }
+        if sixteenBit { return try DeepLayer.render(blended, width: width, height: height, hdr: DeepLayer.isHDR(adjusted)) }
         return try render(blended, width: width, height: height, isMask: isMask)
     }
 

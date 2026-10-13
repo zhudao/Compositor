@@ -7,6 +7,7 @@ import Observation
 nonisolated enum FilterKind: String, CaseIterable, Sendable {
     case gaussianBlur = "Gaussian Blur"
     case motionBlur = "Motion Blur"
+    case progressiveBlur = "Progressive Blur"
     case addNoise = "Add Noise"
     case vignette = "Vignette"
     case bloomGlow = "Bloom / Glow"
@@ -28,7 +29,7 @@ nonisolated enum FilterKind: String, CaseIterable, Sendable {
     var repeatsAsLastFilter: Bool { self != .contentAwareFill && !isImageAdjustment }
     /// Filters made wholly in Core Image, which works at 16 bits as readily as at 8: a 16-bit layer runs them once, on its
     /// 16-bit pixels, rather than three times through `DeepLayer.run`.
-    var runsAtSixteenBits: Bool { self == .gaussianBlur || self == .motionBlur || self == .bloomGlow }
+    var runsAtSixteenBits: Bool { self == .gaussianBlur || self == .motionBlur || self == .progressiveBlur || self == .bloomGlow }
     /// Filters whose output channels each depend on all three input channels (Camera Raw's color, and the ones that work
     /// from brightness), which a 16-bit layer runs the slower, channel-by-channel way (`DeepLayer.run`).
     var mixesChannels: Bool { self == .cameraRaw || self == .tonalContrast || self == .scanlines }
@@ -69,6 +70,18 @@ nonisolated struct FilterSettings: Equatable, Sendable {
     var angle: Double = 0
     /// Motion Blur streak length in layer pixels, 1–2000.
     var distance: Double = 10
+    /// Progressive Blur: the blur at the start of its line and at its end, in layer pixels (a Gaussian blur's radius),
+    /// 0–250, changing evenly between them.
+    var progressiveFrom: Double = 0
+    var progressiveTo: Double = 20
+    /// Where it runs, in document coordinates, set by dragging on the canvas: `progressiveFrom` at `progressiveStart`,
+    /// `progressiveTo` at `progressiveEnd` and past it. Nil until the filter places it on the layer.
+    var progressiveStart: CGPoint?
+    var progressiveEnd: CGPoint?
+    /// Radial: from the start outwards to the circle through the end, rather than along the line.
+    var progressiveRadial = false
+    /// From and To the other way round.
+    var progressiveInverted = false
     /// Add Noise strength as Photoshop's percentage, 0.1–400.
     var amount: Double = 10
     /// Add Noise distribution: Gaussian (more speckled) instead of Uniform.
@@ -119,6 +132,8 @@ nonisolated struct FilterSettings: Equatable, Sendable {
         result.radius = clamp(radius, 0.1...250, 5)
         result.angle = clamp(angle, -90...90, 0)
         result.distance = clamp(distance, 1...2000, 10)
+        result.progressiveFrom = clamp(progressiveFrom, 0...250, 0)
+        result.progressiveTo = clamp(progressiveTo, 0...250, 20)
         result.amount = clamp(amount, 0.1...400, 10)
         result.vignetteAmount = clamp(vignetteAmount, 0...100, 35)
         result.vignetteColor = vignetteColor.clamped
@@ -275,6 +290,8 @@ nonisolated enum PixelFilter {
                     ])
             }
             image = try render(blurred.cropped(to: extent), job: job)
+        case .progressiveBlur:
+            image = try render(progressivelyBlurred(edges, job: job, settings: settings, extent: extent).cropped(to: extent), job: job)
         case .motionBlur:
             // Core Image's y axis points up, so its counterclockwise angle matches Photoshop's.
             let streaked = extending(edges, past: job.canvasSides, of: extent).applyingFilter("CIMotionBlur", parameters: [
@@ -342,10 +359,63 @@ nonisolated enum PixelFilter {
                                      sixteenBit: job.sixteenBit)
     }
 
+    /// A filter's preview on an HDR layer's pixels (`hdr`, at the preview's size), made the way OK makes the result: the
+    /// Core Image filters on them as they are, Exposure exactly, the rest with highlights divided down to within white
+    /// and multiplied back (`DeepLayer.normalizing`) — run once here, where OK runs them several times and reads
+    /// between, too slow for every slider move and too fine to see.
+    static func previewHDR(_ job: FilterJob, from hdr: CGImage) throws -> CGImage {
+        var run = job
+        run.image = hdr
+        if job.kind.runsAtSixteenBits {
+            run.sixteenBit = true
+            return try PixelFilter.run(run)
+        }
+        if job.kind == .exposure {
+            let result = try DeepLayer.exposure(hdr, job.settings.exposure)
+            guard let selection = job.selection else { return result }
+            return try PixelAdjust.blend(result, over: hdr, through: selection, pixelToDocument: job.mapping, isMask: false, sixteenBit: true)
+        }
+        return try DeepLayer.normalizing(hdr) { normal in
+            run.image = normal
+            return try PixelFilter.run(run)
+        }
+    }
+
+    /// Progressive Blur: sharp at the start of its line, blurring to the full amount at the end (or, radial, outwards from
+    /// the start to the circle through the end), by a mask Core Image blurs through. Past the canvas's edge the layer's
+    /// edge pixels carry on, as Gaussian Blur's do.
+    static func progressivelyBlurred(_ edges: CIImage, job: FilterJob, settings: FilterSettings, extent: CGRect) -> CIImage {
+        // The line in the image's pixels, then in Core Image's, whose y axis points up.
+        let toPixels = job.mapping.inverted()
+        func point(_ document: CGPoint) -> CGPoint {
+            let pixel = document.applying(toPixels)
+            return CGPoint(x: pixel.x, y: extent.height - pixel.y)
+        }
+        let start = point(settings.progressiveStart ?? CGPoint(x: extent.midX, y: extent.minY).applying(job.mapping))
+        var end = point(settings.progressiveEnd ?? CGPoint(x: extent.midX, y: extent.maxY).applying(job.mapping))
+        if hypot(end.x - start.x, end.y - start.y) < 1 { end = CGPoint(x: start.x, y: start.y - 1) }
+        // The mask gives each place its share of the strongest blur: From's at the start, To's at the end.
+        var from = settings.progressiveFrom, to = settings.progressiveTo
+        if settings.progressiveInverted { swap(&from, &to) }
+        let strongest = max(from, to)
+        guard strongest > 0 else { return edges }
+        func share(_ radius: Double) -> CIColor { CIColor(red: radius / strongest, green: radius / strongest, blue: radius / strongest) }
+        let mask = settings.progressiveRadial
+            ? CIFilter(name: "CIRadialGradient", parameters: [
+                kCIInputCenterKey: CIVector(cgPoint: start), "inputRadius0": 0,
+                "inputRadius1": hypot(end.x - start.x, end.y - start.y), "inputColor0": share(from), "inputColor1": share(to)])!.outputImage!
+            : CIFilter(name: "CILinearGradient", parameters: [
+                "inputPoint0": CIVector(cgPoint: start), "inputPoint1": CIVector(cgPoint: end),
+                "inputColor0": share(from), "inputColor1": share(to)])!.outputImage!
+        return extending(edges, past: job.canvasSides, of: extent).applyingFilter("CIMaskedVariableBlur", parameters: [
+            "inputMask": mask, kCIInputRadiusKey: strongest * job.scale,
+        ])
+    }
+
     /// A Core Image filter's result, at 16 bits for a 16-bit layer's pixels.
     private static func render(_ image: CIImage, job: FilterJob) throws -> CGImage {
         let width = job.image.width, height = job.image.height
-        if job.sixteenBit { return try DeepLayer.render(image, width: width, height: height) }
+        if job.sixteenBit { return try DeepLayer.render(image, width: width, height: height, hdr: DeepLayer.isHDR(job.image)) }
         return try PixelAdjust.render(image, width: width, height: height, isMask: false)
     }
 }
@@ -361,6 +431,9 @@ final class FilterEdit {
     let selection: SelectionClip?
     var mapping: CGAffineTransform
     var previewSource: CGImage
+    /// An HDR layer's pixels at the preview's size and grid, which its preview is made from, as OK makes the result from
+    /// the layer's own: from `previewSource`, clipped to white, a blur or Exposure would preview something else.
+    var hdrPreviewSource: CGImage?
     var previewScale: CGFloat
     var previewMapping: CGAffineTransform
     /// A filter reaching past the layer's edge — Content-Aware Fill over a selection, a blur spreading outwards —
@@ -468,8 +541,9 @@ final class FilterEdit {
         previewSource = ready.previewSource
         previewScale = ready.previewScale
         previewMapping = ready.previewMapping
+        hdrPreviewSource = try Self.hdrPreview(of: asset, inside: nil, grid: nil, size: ready.previewSource)
         // A rotated layer's sides don't run along the canvas's, so it has none at its edge.
-        if let canvas, kind == .gaussianBlur || kind == .motionBlur, layer.transform.rotation == 0 {
+        if let canvas, kind == .gaussianBlur || kind == .motionBlur || kind == .progressiveBlur, layer.transform.rotation == 0 {
             let inPixels = CGRect(origin: .zero, size: canvas).applying(ready.mapping.inverted())
             let width = CGFloat(asset.image.width), height = CGFloat(asset.image.height)
             if inPixels.minX >= -0.5 { canvasSides.insert(.left) }
@@ -489,6 +563,7 @@ final class FilterEdit {
         switch kind {
         case .gaussianBlur: return settings.preserveTransparency ? 0 : CGFloat(settings.radius * 3 + 2)
         case .motionBlur: return CGFloat(settings.distance / 2 + 2)
+        case .progressiveBlur: return CGFloat(max(settings.progressiveFrom, settings.progressiveTo) * 3 + 2)
         case .bloomGlow: return CGFloat(settings.bloomRadius * 3 + 2)
         default: return 0
         }
@@ -559,7 +634,22 @@ final class FilterEdit {
         previewSource = ready.previewSource
         previewScale = ready.previewScale
         previewMapping = ready.previewMapping
+        hdrPreviewSource = try Self.hdrPreview(of: original, inside: grownInside,
+                                               grid: CGSize(width: source.width, height: source.height), size: ready.previewSource)
         previewSourceVersion &+= 1
+    }
+
+    /// An HDR layer's pixels laid out as `size` (the preview's source) is: padded onto `grid` at `inside` when the layer
+    /// has grown, then scaled to its size. Nil for any other layer.
+    private static func hdrPreview(of asset: ImportedImage, inside: CGRect?, grid: CGSize?, size: CGImage) throws -> CGImage? {
+        guard asset.isHDR, let deep = try DeepLayer.flattened(asset) else { return nil }
+        guard let grid, let inside else { return try DeepLayer.hdrPreview(of: asset, matching: size) }
+        let whole = try DeepLayer.padded(deep, to: grid, inside: inside)
+        guard whole.width != size.width || whole.height != size.height else { return whole }
+        let context = try DeepLayer.context(width: size.width, height: size.height, hdr: true)
+        context.interpolationQuality = .high
+        BrushRaster.draw(whole, in: CGRect(x: 0, y: 0, width: size.width, height: size.height), mask: false, context: context)
+        return context.makeImage()
     }
 
     func previewImage(for id: UUID) -> CGImage? { preview && id == layerID ? preparedPreview : nil }
@@ -613,6 +703,15 @@ extension EditorSession {
                 layer.asset = ImportedImage(image: clear, thumbnail: try PixelAdjust.thumbnail(of: clear), name: layer.name)
             }
             var settings = filterSettings
+            // Progressive Blur starts sharp at the top of the layer's visible part, blurring to its foot; Last Filter
+            // keeps the line it had.
+            if kind == .progressiveBlur, !repeating {
+                let shown = CGRect(origin: layer.transform.origin, size: layer.transform.size)
+                    .intersection(CGRect(origin: .zero, size: document.size))
+                let area = shown.isNull || shown.isEmpty ? CGRect(origin: .zero, size: document.size) : shown
+                settings.progressiveStart = CGPoint(x: area.midX, y: area.minY + area.height * 0.35)
+                settings.progressiveEnd = CGPoint(x: area.midX, y: area.maxY)
+            }
             // Gradient Map starts from the foreground and background colors, as in Photoshop.
             if kind == .gradientMap {
                 settings.gradientMap = GradientMapSettings(shadows: AdjustmentColor(foregroundColor), highlights: AdjustmentColor(backgroundColor))
@@ -650,6 +749,15 @@ extension EditorSession {
         if filterEdit === edit { cancelFilter() }
     }
 
+    /// Progressive Blur's line, dragged on the canvas: either end moved (document coordinates).
+    func moveProgressiveBlur(start: CGPoint? = nil, end: CGPoint? = nil) {
+        guard let edit = filterEdit, edit.kind == .progressiveBlur, !edit.committing else { return }
+        var settings = edit.settings
+        if let start { settings.progressiveStart = start }
+        if let end { settings.progressiveEnd = end }
+        updateFilter(settings, preview: edit.preview)
+    }
+
     func updateFilter(_ settings: FilterSettings, preview: Bool) {
         guard let edit = filterEdit, !edit.committing else { return }
         edit.settings = settings.normalized
@@ -677,11 +785,18 @@ extension EditorSession {
         edit.pending = nil
         let placement = edit.pendingTransform
         let sourceVersion = edit.previewSourceVersion
+        let hdrSource = edit.kind.isAutomatic ? nil : edit.hdrPreviewSource
         edit.preparing = true
         edit.previewError = nil
         edit.previewTask = Task { @MainActor [weak self, weak edit] in
             let result = await Task.detached(priority: .userInitiated) { () -> (CGImage?, CameraRawScope?, String?) in
                 do {
+                    // An HDR layer previews from its HDR pixels, as OK makes it, shown clipped to white.
+                    if let hdrSource {
+                        let made = try PixelFilter.previewHDR(job, from: hdrSource)
+                        let scope = job.kind == .cameraRaw ? try CameraRawScope.preview(job).scope : nil
+                        return (try DeepLayer.dithered(made), scope, nil)
+                    }
                     if job.kind == .cameraRaw {
                         let made = try CameraRawScope.preview(job)
                         return (made.image, made.scope, nil)
@@ -768,7 +883,7 @@ extension EditorSession {
         let cached = edit.kind.isAutomatic && edit.preparedSettings == edit.settings ? edit.preparedPreview : nil
         do {
             let grown = keepsOutline ? nil : edit.grownTransform
-            let spreads = edit.kind == .gaussianBlur || edit.kind == .motionBlur || edit.kind == .bloomGlow
+            let spreads = edit.kind == .gaussianBlur || edit.kind == .motionBlur || edit.kind == .progressiveBlur || edit.kind == .bloomGlow
             // A 16-bit layer runs the filter on its 16-bit pixels, padded as the 8-bit ones were (`DeepLayer.run`).
             // These rasterize the layer to 8-bit instead: Content-Aware Fill makes new pixels from scratch; Dither's
             // result is a few levels by design (three runs read between would mix its patterns into colors); Remove
@@ -779,6 +894,15 @@ extension EditorSession {
                 edit.grownInside.map { (size: CGSize(width: grownImage.width, height: grownImage.height), inside: $0) }
             }
             let made = try await Task.detached(priority: .userInitiated) { () -> (asset: ImportedImage, transform: LayerTransform?) in
+                // Exposure on an HDR layer, exactly: turned down, it brings highlights into view.
+                if let deep, DeepLayer.isHDR(deep), job.kind == .exposure {
+                    var result = try DeepLayer.exposure(deep, job.settings.exposure)
+                    if let selection = job.selection {
+                        result = try PixelAdjust.blend(result, over: deep, through: selection, pixelToDocument: job.mapping,
+                                                       isMask: false, sixteenBit: true)
+                    }
+                    return (try DeepLayer.asset(result, name: job.kind.rawValue), grown)
+                }
                 if let deep, let lookup = job.kind.sixteenBitLookup(job.settings) {
                     // Channels that mix go through the adjustment's color lookup at 16 bits.
                     var result = try DeepLayer.lookup(deep, cube: lookup.cube, dimension: lookup.dimension)

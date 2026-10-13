@@ -14,6 +14,10 @@ nonisolated struct ImportedImage: @unchecked Sendable {
     /// layer's painted, these are its `raster`'s base, with the strokes' 8-bit patches over them: read the whole layer
     /// at 16 bits with `DeepLayer.flattened`.
     var deep: CGImage? = nil
+    /// An HDR layer: `deep` holds light brighter than white, as half floats (`DeepLayer.hdr`).
+    var isHDR: Bool { deep.map(DeepLayer.isHDR) ?? false }
+    /// Its file in a project: EXR for an HDR layer, which PNG can't hold, otherwise PNG.
+    func file(for id: UUID) -> String { "\(id.uuidString).\(isHDR ? "exr" : "png")" }
 }
 
 /// A folder brought in as images: the ones directly inside it, not its subfolders'.
@@ -90,7 +94,7 @@ actor ImageImporter {
                   let identifier = CGImageSourceGetType(source) as String?,
                   let type = UTType(identifier) else { throw ImageImportError.unreadable }
             let photoshop = flattenedPhotoshop ? [UTType.photoshopImage, .photoshopLargeImage] : []
-            guard ([UTType.jpeg, .png, .heic, .heif, .tiff, .webP] + photoshop).contains(where: { type.conforms(to: $0) }) else {
+            guard ([UTType.jpeg, .png, .heic, .heif, .tiff, .webP, .openEXR, .radianceHDR] + photoshop).contains(where: { type.conforms(to: $0) }) else {
                 throw ImageImportError.unsupported
             }
             guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -105,7 +109,14 @@ actor ImageImporter {
             }
             let orientation = (properties[kCGImagePropertyOrientation] as? Int32) ?? 1
             let oriented = CIImage(cgImage: decoded).oriented(forExifOrientation: orientation)
-            // More than 8 bits a channel (16-bit PNG and TIFF, 10-bit HEIF, float): a 16-bit layer, which keeps them
+            // Floats (EXR, Radiance HDR, float TIFF): an HDR layer when they go brighter than white, kept so as half
+            // floats in extended sRGB (`DeepLayer.wideAsset`); otherwise a 16-bit layer.
+            if decoded.bitmapInfo.contains(.floatComponents) {
+                guard let pixels = wideContext.createCGImage(oriented, from: oriented.extent, format: .RGBAh,
+                                                             colorSpace: DeepLayer.hdrSpace) else { throw ImageImportError.unreadable }
+                return try DeepLayer.wideAsset(pixels, name: url.deletingPathExtension().lastPathComponent)
+            }
+            // More than 8 bits a channel (16-bit PNG and TIFF, 10-bit HEIF): a 16-bit layer, which keeps them
             // (`DeepLayer`), shown and edited through a copy rounded to 8 with a fine noise, so gradients don't step.
             let wide = decoded.bitsPerComponent > 8
             if wide {

@@ -90,8 +90,10 @@ extension EditorSession {
         }
         let flat = CanvasDocument(id: document.id, width: document.width, height: document.height,
                                   layers: deepLayers, resolution: document.resolution)
-        let context = try DeepLayer.context(width: document.width, height: document.height)
-        drawLiveComposite(flat, in: context, sixteenBit: true)
+        // With an HDR layer among them, the merge keeps light brighter than white too.
+        let hdr = subset.contains { $0.asset?.isHDR == true }
+        let context = try DeepLayer.context(width: document.width, height: document.height, hdr: hdr)
+        drawLiveComposite(flat, in: context, sixteenBit: true, hdr: hdr)
         guard var full = context.makeImage() else { throw ExportError.render }
         var placed = canvas
         if let crop = try PixelFilter.trimCrop(try DeepLayer.dithered(full)), let cropped = full.cropping(to: crop) {

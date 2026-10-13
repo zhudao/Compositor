@@ -47,4 +47,31 @@ void deep_restore_alpha(uint16_t *rgba, size_t stride, const uint16_t *alpha, si
 // color cube. Operations whose channels mix (Hue/Saturation, Black & White) go this way rather than through the three
 // runs, which read each channel's result off that channel's own input alone.
 void deep_cube_apply(uint16_t *pixels, size_t stride, size_t width, size_t height, const float *cube, int dimension);
+
+// The brightest color channel in a half-float RGBA image (premultiplied, native-endian, 4 a pixel), unpremultiplied:
+// above 1 where it holds light brighter than white (an HDR image).
+float deep_half_peak(const uint16_t *pixels, size_t stride, size_t width, size_t height);
+
+// HDR layers (half floats in extended sRGB, premultiplied, native-endian, 4 a pixel) through 8-bit operations: each
+// pixel brighter than white is divided by its brightest channel, into the 16-bit layout, so its color fits within white
+// with its hue; `scales` keeps each pixel's divisor (1 for the rest), `width` a row. The operation runs as on any
+// 16-bit layer, and `deep_hdr_restore` multiplies its result back into half floats. Highlights take the operation's
+// way with color, and dim with it: a Levels or Curves pulling white down pulls them down in proportion.
+void deep_hdr_normalize(const uint16_t *hdr, size_t hdrStride, uint16_t *out, size_t outStride, float *scales,
+                        size_t width, size_t height);
+void deep_hdr_restore(const uint16_t *normal, size_t normalStride, const float *scales, uint16_t *hdr, size_t hdrStride,
+                      size_t width, size_t height);
+
+// Exposure on HDR pixels in place, as `ExposureSettings.table` at 8 bits but with nothing clipped at white: each channel
+// to linear light, times `scale`, plus `offset`, to the power `inverseGamma`, and back.
+void deep_hdr_exposure(uint16_t *hdr, size_t stride, size_t width, size_t height, float scale, float offset, float inverseGamma);
+
+// `deep_extract_alpha` and `deep_restore_alpha` for a clipping stack's surface in half floats (a merge with an HDR
+// layer), alpha kept as floats.
+void deep_extract_alpha_hdr(uint16_t *rgba, size_t stride, float *alpha, size_t width, size_t height);
+void deep_restore_alpha_hdr(uint16_t *rgba, size_t stride, const float *alpha, size_t width, size_t height);
+
+// `deep_take_painted` for an HDR layer's half floats.
+void deep_take_painted_hdr(uint16_t *hdr, size_t hdrStride, const uint8_t *painted, const uint8_t *base, size_t stride,
+                           size_t width, size_t height);
 #endif

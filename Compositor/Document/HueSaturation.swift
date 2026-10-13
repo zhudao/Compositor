@@ -402,6 +402,8 @@ final class HueSaturationEdit {
     let pixelToDocument: CGAffineTransform
     /// Downscaled original used for previews, with the mapping for its own pixel grid.
     @ObservationIgnored let previewSource: CGImage
+    /// An HDR layer's pixels at `previewSource`'s size: its preview is made from them, as OK makes the result.
+    @ObservationIgnored var hdrPreviewSource: CGImage?
     @ObservationIgnored let previewPixelToDocument: CGAffineTransform
     var settings = HueSaturationSettings()
     var preview = true
@@ -432,6 +434,7 @@ final class HueSaturationEdit {
             previewSource = original.image
             previewPixelToDocument = pixelToDocument
         }
+        hdrPreviewSource = try DeepLayer.hdrPreview(of: original, matching: previewSource)
     }
 
     func previewImage(for layer: UUID) -> CGImage? { layer == layerID ? preparedPreview : nil }
@@ -485,7 +488,7 @@ extension EditorSession {
             brushRevision += 1
             return
         }
-        hueSaturationPending = HueSaturationJob(image: edit.previewSource, settings: settings,
+        hueSaturationPending = HueSaturationJob(image: edit.hdrPreviewSource ?? edit.previewSource, settings: settings,
                                                 selection: edit.selection, pixelToDocument: edit.previewPixelToDocument,
                                                 thumbnail: false)
         renderPendingPreview(edit)
@@ -627,7 +630,18 @@ extension EditorSession {
     }
 
     private func adjustedPixels(_ job: HueSaturationJob) async -> AdjustedPixels? {
-        do { return try await Task.detached(priority: .userInitiated) { try HueSaturationFilter.run(job) }.value }
+        do {
+            return try await Task.detached(priority: .userInitiated) {
+                // An HDR layer's pixels, as OK works on them (`DeepLayer.lookup`), shown clipped to white.
+                guard DeepLayer.isHDR(job.image) else { return try HueSaturationFilter.run(job) }
+                var result = try DeepLayer.lookup(job.image, cube: HueSaturationFilter.cube(job.settings), dimension: HueSaturationFilter.dimension)
+                if let selection = job.selection {
+                    result = try PixelAdjust.blend(result, over: job.image, through: selection, pixelToDocument: job.pixelToDocument,
+                                                   isMask: false, sixteenBit: true)
+                }
+                return AdjustedPixels(image: try DeepLayer.dithered(result), thumbnail: nil)
+            }.value
+        }
         catch { brushError = error.localizedDescription; return nil }
     }
 }
