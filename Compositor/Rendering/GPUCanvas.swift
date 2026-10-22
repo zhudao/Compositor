@@ -597,7 +597,52 @@ nonisolated enum GPUAdjustment {
                                      monochromatic: adjustment.resolvedNoiseMonochromatic, seed: adjustment.resolvedNoiseSeed)
         case .grain:
             return GPUNoise.addGrain(to: image, grain: adjustment.grain, scale: scale, mapping: mapping)
+        case .bloomGlow:
+            let settings = adjustment.filterLayer
+            return image.applyingFilter("CIBloom", parameters: [
+                kCIInputRadiusKey: settings.bloomRadius * scale, kCIInputIntensityKey: settings.bloomAmount / 50,
+            ]).cropped(to: image.extent)
+        case .progressiveBlur:
+            return progressivelyBlurred(image, adjustment.filterLayer, scale: scale, mapping: mapping)
+        case .rgbSplit:
+            let settings = adjustment.filterLayer
+            let distance = settings.rgbSplitDistance * scale, blur = settings.rgbSplitBlur * scale
+            guard distance > 0 || blur > 0 else { return image }
+            let center = settings.rgbSplitCenter.map { $0.applying(mapping) } ?? CGPoint(x: image.extent.midX, y: image.extent.midY)
+            let angle = settings.rgbSplitAngle * .pi / 180
+            let spread = settings.rgbSplitRadial ? distance * 2 : distance, smear = settings.rgbSplitRadial ? blur * 2 : blur
+            // The frame's y points down, as the document's does, so the direction carries over as it is.
+            return MetalDispersion.apply(to: image, MetalDispersion.Parameters(
+                center: SIMD2(Float(center.x), Float(center.y)), direction: SIMD2(Float(cos(angle)), Float(-sin(angle))),
+                distance: Float(distance), blur: Float(blur), reach: Float(settings.rgbSplitReach * scale),
+                radial: settings.rgbSplitRadial ? 1 : 0, sides: 0,
+                spectral: distance > 0 ? UInt32(min(32, max(3, Int(spread)))) : 1,
+                smear: blur > 0 ? UInt32(min(24, max(2, Int(smear / 2)))) : 1),
+                margin: CGFloat((distance + blur) * (settings.rgbSplitRadial ? 2 : 1) + 2))
         }
+    }
+
+    /// Progressive Blur, as `PixelFilter.progressivelyBlurred` makes it, in frame pixels: its line placed through
+    /// `mapping`, the frame's y pointing down as the document's does.
+    private static func progressivelyBlurred(_ image: CIImage, _ settings: FilterLayerSettings, scale: CGFloat,
+                                             mapping: CGAffineTransform) -> CIImage {
+        let extent = image.extent
+        let start = settings.progressiveStart.map { $0.applying(mapping) } ?? CGPoint(x: extent.midX, y: extent.minY)
+        var end = settings.progressiveEnd.map { $0.applying(mapping) } ?? CGPoint(x: extent.midX, y: extent.maxY)
+        if hypot(end.x - start.x, end.y - start.y) < 1 { end = CGPoint(x: start.x, y: start.y + 1) }
+        var from = settings.progressiveFrom, to = settings.progressiveTo
+        if settings.progressiveInverted { swap(&from, &to) }
+        let strongest = max(from, to)
+        guard strongest > 0 else { return image }
+        func share(_ radius: Double) -> CIColor { CIColor(red: radius / strongest, green: radius / strongest, blue: radius / strongest) }
+        let mask = settings.progressiveRadial
+            ? CIFilter(name: "CIRadialGradient", parameters: [
+                kCIInputCenterKey: CIVector(cgPoint: start), "inputRadius0": 0,
+                "inputRadius1": hypot(end.x - start.x, end.y - start.y), "inputColor0": share(from), "inputColor1": share(to)])!.outputImage!
+            : CIFilter(name: "CILinearGradient", parameters: [
+                "inputPoint0": CIVector(cgPoint: start), "inputPoint1": CIVector(cgPoint: end),
+                "inputColor0": share(from), "inputColor1": share(to)])!.outputImage!
+        return image.applyingFilter("CIMaskedVariableBlur", parameters: ["inputMask": mask, kCIInputRadiusKey: strongest * scale])
     }
 
     /// Exposure over the full range, past white: as `ExposureSettings.table` (to linear light, scaled, offset, raised to

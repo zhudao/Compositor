@@ -107,6 +107,28 @@ struct FilterSheet: View {
                     .help("The blur where the line ends, and past it")
                 Toggle("Invert", isOn: flag(\.progressiveInverted))
                     .help("Swap From and To: blur the start and sharpen toward the end")
+            case .rgbSplit:
+                HStack(spacing: 10) {
+                    Text("Shape")
+                    Picker("Shape", selection: flag(\.rgbSplitRadial)) {
+                        Text("Linear").tag(false)
+                        Text("Radial").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    .help("Linear splits along one direction; Radial splits outwards from a center, sharp there")
+                }
+                if settings.rgbSplitRadial {
+                    Text("Click or drag on the canvas to move the center")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                control("Distance", \.rgbSplitDistance, range: 0...200, unit: "px", decimals: 0, logarithmic: false)
+                    .help("How far the colors spread apart, red one way and blue the other")
+                control("Blur", \.rgbSplitBlur, range: 0...400, unit: "px", decimals: 0, logarithmic: false)
+                    .help("Smear the split into streaks along its direction")
+                if !settings.rgbSplitRadial {
+                    control("Angle", \.rgbSplitAngle, range: -180...180, unit: "°", decimals: 0, logarithmic: false)
+                        .help("Which way the colors spread")
+                }
             case .motionBlur:
                 control("Angle", \.angle, range: -90...90, unit: "°", decimals: 0, logarithmic: false)
                 control("Distance", \.distance, range: 1...2000, unit: "px", decimals: 0, logarithmic: true)
@@ -173,6 +195,15 @@ struct FilterSheet: View {
             Divider()
             HStack {
                 Button("Cancel") { session.cancelFilter() }.configuredNativeShortcut(.escape)
+                // The utility beside the effect: the layer's own channels, unshifted, as layers for Export As › Channel Pack.
+                // Not on an RGB Split adjustment layer, which has no pixels of its own to split.
+                if edit?.kind == .rgbSplit, session.adjustmentOriginal == nil {
+                    Button("Split to Layers") {
+                        session.cancelFilter()
+                        session.splitChannels()
+                    }
+                    .help("Split the layer's original channels into four grayscale layers, Red, Green, Blue and Alpha, for Export As › Channel Pack. Color under fully transparent pixels can't be recovered")
+                }
                 Spacer()
                 // While the preview is being worked out (Remove Background's mask, Content-Aware Fill) OK waits, so
                 // the panel says what it is waiting for rather than showing a disabled button and nothing else.

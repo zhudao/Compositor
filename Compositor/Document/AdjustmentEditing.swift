@@ -39,8 +39,9 @@ extension EditorSession {
                 let edit = try HueSaturationEdit(layerID: layer.id, original: asset, selection: nil, transform: layer.transform)
                 edit.settings = original.resolvedHSV
                 hueSaturation = edit
-            case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise:
-                var settings = FilterSettings()
+            case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise,
+                 .progressiveBlur, .bloomGlow, .rgbSplit:
+                var settings = original.filterLayer.applied(to: FilterSettings())
                 settings.curves = original.curves
                 settings.exposure = original.exposure
                 settings.gradientMap = original.gradientMap
@@ -75,7 +76,8 @@ extension EditorSession {
         case .hsv:
             guard let hueSaturation else { return nil }
             value.hsvSettings = hueSaturation.settings
-        case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise:
+        case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise,
+             .progressiveBlur, .bloomGlow, .rgbSplit:
             guard let filterEdit else { return nil }
             switch value.kind {
             case .exposure: value.exposure = filterEdit.settings.exposure
@@ -91,6 +93,7 @@ extension EditorSession {
                 value.resolvedNoiseAmount = filterEdit.settings.amount
                 value.resolvedNoiseGaussian = filterEdit.settings.gaussian
                 value.resolvedNoiseMonochromatic = filterEdit.settings.monochromatic
+            case .progressiveBlur, .bloomGlow, .rgbSplit: value.filterLayer = FilterLayerSettings(filterEdit.settings)
             default: value.curves = filterEdit.settings.curves
             }
         }

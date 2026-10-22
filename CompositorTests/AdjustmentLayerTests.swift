@@ -189,7 +189,8 @@ import Testing
             session.updateFilter(settings, preview: true)
             #expect(session.activeLayer?.adjustment?.curves == settings.curves)
             await session.commitFilter()
-        case .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise:
+        case .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise,
+             .progressiveBlur, .bloomGlow, .rgbSplit:
             #expect(session.filterEdit?.kind == kind.filterKind)
             var settings = try #require(session.filterEdit).settings
             switch kind {
@@ -200,6 +201,9 @@ import Testing
             case .gaussianBlur: settings.radius = 24
             case .motionBlur: settings.angle = 35; settings.distance = 48
             case .addNoise: settings.amount = 35; settings.gaussian = true; settings.monochromatic = true
+            case .progressiveBlur: settings.progressiveTo = 30; settings.progressiveRadial = true
+            case .bloomGlow: settings.bloomAmount = 70; settings.bloomRadius = 10
+            case .rgbSplit: settings.rgbSplitDistance = 20; settings.rgbSplitBlur = 40; settings.rgbSplitRadial = true
             default: settings.grain.amount = 70
             }
             session.updateFilter(settings, preview: true)
@@ -209,6 +213,11 @@ import Testing
             if kind == .motionBlur { #expect(live.resolvedMotionAngle == 35 && live.resolvedMotionDistance == 48) }
             if kind == .addNoise {
                 #expect(live.resolvedNoiseAmount == 35 && live.resolvedNoiseGaussian && live.resolvedNoiseMonochromatic)
+            }
+            if kind == .progressiveBlur { #expect(live.filterLayer.progressiveTo == 30 && live.filterLayer.progressiveRadial) }
+            if kind == .bloomGlow { #expect(live.filterLayer.bloomAmount == 70 && live.filterLayer.bloomRadius == 10) }
+            if kind == .rgbSplit {
+                #expect(live.filterLayer.rgbSplitDistance == 20 && live.filterLayer.rgbSplitBlur == 40 && live.filterLayer.rgbSplitRadial)
             }
             await session.commitFilter()
         case .hsv:
@@ -235,8 +244,10 @@ import Testing
             #expect(session.levels?.settings == saved.levels)
             session.updateLevels(LevelsSettings(), preview: true)
             session.cancelLevels()
-        case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise:
+        case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise,
+             .progressiveBlur, .bloomGlow, .rgbSplit:
             let reopened = try #require(session.filterEdit).settings
+            #expect(FilterLayerSettings(reopened) == saved.filterLayer)
             #expect(reopened.curves == saved.curves && reopened.exposure == saved.exposure
                     && reopened.gradientMap == saved.gradientMap && reopened.grain == saved.grain
                     && reopened.blackWhite == saved.blackWhite && reopened.colorBalance == saved.colorBalance)

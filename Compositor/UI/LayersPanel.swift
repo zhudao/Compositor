@@ -25,7 +25,7 @@ struct LayersPanel: View {
                 VStack(spacing: 10) {
                     Image(systemName: "square.3.layers.3d").font(.system(size: 25, weight: .light))
                     Text("No layers yet").font(.callout.weight(.medium))
-                    Text(session.document == nil ? "Create a canvas or import an image." : "Import an image or add a blank layer.")
+                    Text(session.document == nil ? "Create a canvas or import a file." : "Import a file or add a blank layer.")
                         .font(.caption).multilineTextAlignment(.center)
                 }
                 .foregroundStyle(.secondary).padding(16)
@@ -41,7 +41,12 @@ struct LayersPanel: View {
                     .help("Group selected layers (⌘G)").accessibilityLabel("New folder").disabled(!session.layersLookEditable)
                 LayerMaskMenu(session: session)
                 Menu {
-                    ForEach(AdjustmentKind.allCases, id: \.self) { kind in
+                    // The Image menu's adjustments, then the Filter menu's filters.
+                    ForEach(AdjustmentKind.imageAdjustments, id: \.self) { kind in
+                        Button(kind.rawValue) { session.addAdjustment(kind) }
+                    }
+                    Divider()
+                    ForEach(AdjustmentKind.filters, id: \.self) { kind in
                         Button(kind.rawValue) { session.addAdjustment(kind) }
                     }
                 } label: { Image(systemName: "circle.lefthalf.filled").footerHitArea() }

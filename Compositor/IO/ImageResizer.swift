@@ -105,17 +105,19 @@ actor ImageResizer {
 }
 
 extension EditorSession {
+    /// Keeps the zoom, so the image visibly grows or shrinks on screen; fitting it to the window again made a resize
+    /// look like nothing had happened.
     func applyImageSize(_ snapshot: ProjectSnapshot) {
-        applyDocumentSize(snapshot, actionName: "Image Size")
+        applyDocumentSize(snapshot, actionName: "Image Size", keepingZoom: true)
     }
 
-    func applyDocumentSize(_ snapshot: ProjectSnapshot, actionName: String) {
+    func applyDocumentSize(_ snapshot: ProjectSnapshot, actionName: String, keepingZoom: Bool = false) {
         guard document?.id == snapshot.manifest.documentID else { return }
         beginEdit(actionName)
         let m = snapshot.manifest
         document = CanvasDocument(id: m.documentID, width: m.width, height: m.height,
             layers: snapshot.documentLayers, resolution: m.resolution ?? 72, guides: m.guides ?? [])
         endEdit()
-        viewport.fit(documentSize: document!.size)
+        if keepingZoom { viewport.recenter() } else { viewport.fit(documentSize: document!.size) }
     }
 }

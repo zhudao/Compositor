@@ -7,7 +7,8 @@ final class ProjectTab: Identifiable {
     let id = UUID()
     let session: EditorSession
     let controller: ProjectController
-    let defaultName: String
+    /// Shown until the project is saved: Untitled, the opened file's name, or a Photoshop artboard's.
+    var defaultName: String
     var title: String { session.projectURL?.deletingPathExtension().lastPathComponent ?? defaultName }
     init(name: String) {
         defaultName = name
@@ -30,6 +31,7 @@ final class ProjectWorkspace {
     }
     init() {
         let first = ProjectTab(name: "Untitled")
+        defer { attach(first) }
         first.session.skipsInitialClipboardCanvasSize = true
         tabs = [first]; selectedID = first.id
         first.controller.workspace = self
@@ -50,9 +52,30 @@ final class ProjectWorkspace {
         if reuseEmpty, tabs.count == 1, current.session.document == nil { return current }
         let tab = ProjectTab(name: freeUntitledName)
         tab.controller.workspace = self; tab.controller.window = window
+        attach(tab)
         tabs.append(tab); selectedID = tab.id
         return tab
     }
+    /// Gives `tab` the way to open a Photoshop file's artboards, each as a document in a tab of its own: the first in
+    /// `tab` while it's still empty, the rest in new tabs named for them.
+    private func attach(_ tab: ProjectTab) {
+        tab.session.opensArtboard = { [weak self, weak tab] document, name in
+            guard let self, let tab else { return }
+            let target: ProjectTab
+            if tab.session.document == nil, tabs.contains(where: { $0 === tab }) {
+                target = tab
+                target.defaultName = name
+            } else {
+                target = ProjectTab(name: name)
+                target.controller.workspace = self; target.controller.window = window
+                attach(target)
+                tabs.append(target)
+            }
+            selectedID = target.id
+            await target.session.importArtboard(document, named: name)
+        }
+    }
+
     /// Reorders a tab by dragging it in the strip. Chrome, not a document edit, so it never touches undo.
     /// `index` is where the tab should land in the final order, clamped to the array's bounds.
     func moveTab(_ id: UUID, to index: Int) {
@@ -99,6 +122,7 @@ final class ProjectWorkspace {
         }
         // Load into an unattached session, so a failed open never leaves a broken tab.
         let tab = ProjectTab(name: url.deletingPathExtension().lastPathComponent)
+        attach(tab)
         tab.controller.window = window
         guard await tab.controller.open(url) else { return false }
         if tabs.count == 1, current.session.document == nil { tabs.removeAll() }

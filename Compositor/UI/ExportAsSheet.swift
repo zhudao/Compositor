@@ -10,21 +10,35 @@ struct ExportAsSheet: View {
     /// The same flattened in half floats, when the document has an HDR layer: what an EXR is written from, the only
     /// format offered that keeps light brighter than white. Without one, EXR isn't offered.
     let hdrRaster: ExportRaster?
-    private var formats: [ExportFormat] { ExportFormat.allCases.filter { $0 != .exr || hdrRaster != nil } }
+    /// The document's layers, which Channel Pack reads its channels from; without it, Channel Pack isn't offered.
+    let snapshot: ProjectSnapshot?
+    private var formats: [ExportFormat] {
+        ExportFormat.allCases.filter { ($0 != .exr || hdrRaster != nil) && ($0 != .channelPack || snapshot != nil) }
+    }
     let session: EditorSession
     let finish: ((data: Data, format: ExportFormat)?) -> Void
     @State private var format: ExportFormat
     @State private var options: JPEGOptions
     @State private var width: Int
     @State private var height: Int
+    /// Channel Pack's red, green, blue and alpha, in that order.
+    @State private var channels: [ChannelPack.Source]
+    /// Each document's last Channel Pack choices, while the app is open.
+    @MainActor private static var channelChoices: [UUID: [ChannelPack.Source]] = [:]
     /// JPEG's quality from the last export, which the next one starts from.
     private static let qualityKey = "jpegExportQuality"
 
-    init(raster: ExportRaster, deepRaster: ExportRaster? = nil, hdrRaster: ExportRaster? = nil, session: EditorSession,
-         format: ExportFormat, finish: @escaping ((data: Data, format: ExportFormat)?) -> Void) {
+    init(raster: ExportRaster, deepRaster: ExportRaster? = nil, hdrRaster: ExportRaster? = nil, snapshot: ProjectSnapshot? = nil,
+         session: EditorSession, format: ExportFormat, finish: @escaping ((data: Data, format: ExportFormat)?) -> Void) {
         self.raster = raster
         self.deepRaster = deepRaster
         self.hdrRaster = hdrRaster
+        self.snapshot = snapshot
+        let layers = snapshot?.manifest.layers ?? []
+        let remembered = snapshot.flatMap { Self.channelChoices[$0.manifest.documentID] }?
+            .filter { if case .layer(let id) = $0 { layers.contains { $0.id == id } } else { true } }
+        _channels = State(initialValue: remembered?.count == 4 ? remembered!
+                          : ChannelPack.Channel.allCases.map { ChannelPack.defaultSource(for: $0, in: layers) })
         self.session = session
         self.finish = finish
         var start = JPEGOptions()
@@ -32,7 +46,7 @@ struct ExportAsSheet: View {
             start.quality = min(1, max(0, saved))
         }
         _options = State(initialValue: start)
-        _format = State(initialValue: format == .exr && hdrRaster == nil ? .png : format)
+        _format = State(initialValue: (format == .exr && hdrRaster == nil) || (format == .channelPack && snapshot == nil) ? .png : format)
         _width = State(initialValue: raster.image.width)
         _height = State(initialValue: raster.image.height)
     }
@@ -46,6 +60,8 @@ struct ExportAsSheet: View {
         var sixteenBit: Bool
         /// In this CMYK profile's inks, for print (JPEG, TIFF and PDF); nil for RGB.
         var cmyk: CMYKProfile?
+        /// Channel Pack's sources; empty for the other formats.
+        var channels: [ChannelPack.Source] = []
     }
     struct Encoded {
         let settings: Settings
@@ -54,7 +70,7 @@ struct ExportAsSheet: View {
     }
     private var settings: Settings {
         Settings(format: format, options: options, width: width, height: height, sixteenBit: sixteenBit && format == .png && deepRaster != nil,
-                 cmyk: cmyk && takesCMYK ? profile : nil)
+                 cmyk: cmyk && takesCMYK ? profile : nil, channels: format == .channelPack ? channels : [])
     }
     /// The formats that can be written in a printer's inks.
     private var takesCMYK: Bool { format == .jpeg || format == .tiff || format == .pdf }
@@ -158,6 +174,14 @@ struct ExportAsSheet: View {
                         }
                     }
                 }
+                if format == .channelPack {
+                    ForEach(Array(ChannelPack.Channel.allCases.enumerated()), id: \.offset) { index, channel in
+                        GridRow {
+                            Text(channel.rawValue)
+                            channelPicker(index, channel: channel)
+                        }
+                    }
+                }
                 if format == .pdf {
                     GridRow {
                         Text("Page")
@@ -174,7 +198,8 @@ struct ExportAsSheet: View {
                 }
             }
             HStack(spacing: 12) {
-                Text(format == .exr ? "Brighter than white kept · Transparency kept"
+                Text(format == .channelPack ? "Each channel from a layer, read as grayscale · PNG"
+                     : format == .exr ? "Brighter than white kept · Transparency kept"
                      : takesCMYK && cmyk ? "CMYK – \(profile?.name ?? "No profile")"
                      : format == .png || format == .tiff ? "Transparency kept · sRGB" : "sRGB")
                     .foregroundStyle(.secondary)
@@ -187,6 +212,7 @@ struct ExportAsSheet: View {
                 Button("Export…") {
                     DialogColorSwatch.closePicker(session)
                     if format == .jpeg { UserDefaults.standard.set(options.quality, forKey: Self.qualityKey) }
+                    if format == .channelPack, let snapshot { Self.channelChoices[snapshot.manifest.documentID] = channels }
                     if let result { finish((result.data, result.settings.format)) }
                 }
                     .configuredNativeShortcut(.return)
@@ -208,6 +234,13 @@ struct ExportAsSheet: View {
             error = nil
             do {
                 try await Task.sleep(for: .milliseconds(200))
+                if requested.format == .channelPack, let snapshot {
+                    let packed = try await ImageExporter.shared.channelPack(snapshot, sources: requested.channels,
+                                                                            width: requested.width, height: requested.height)
+                    try Task.checkCancellation()
+                    result = Encoded(settings: requested, data: packed.data, preview: packed.preview)
+                    return
+                }
                 let source = requested.format == .exr ? hdrRaster ?? raster : requested.sixteenBit ? deepRaster ?? raster : raster
                 let sized = try await ImageExporter.shared.resized(source, width: requested.width, height: requested.height)
                 let data: Data, preview: CGImage
@@ -218,7 +251,7 @@ struct ExportAsSheet: View {
                 case .tiff:
                     let matte = CGColor(srgbRed: requested.options.red, green: requested.options.green, blue: requested.options.blue, alpha: 1)
                     (data, preview) = try await ImageExporter.shared.tiffData(sized, cmyk: requested.cmyk, matte: matte)
-                case .png: (data, preview) = (try await ImageExporter.shared.pngData(sized), sized.image)
+                case .png, .channelPack: (data, preview) = (try await ImageExporter.shared.pngData(sized), sized.image)
                 // Shown as everything is, brighter than white as white.
                 case .exr: (data, preview) = (try await ImageExporter.shared.exrData(sized), try DeepLayer.dithered(sized.image))
                 case .pdf:
@@ -271,8 +304,23 @@ struct ExportAsSheet: View {
             .pickerStyle(.inline).labelsHidden()
         }
         .menuStyle(.button).fixedSize()
-        .help("Other formats: TIFF and PDF\(others.contains(.exr) ? ", and EXR to keep light brighter than white" : "")")
+        .help("Other formats: TIFF and PDF\(others.contains(.exr) ? ", EXR to keep light brighter than white" : ""), and Channel Pack for game textures")
         if chosen { menu.buttonStyle(.borderedProminent) } else { menu.buttonStyle(.bordered) }
+    }
+
+    /// A channel's source: one of the document's layers or groups, top first, or solid black or white.
+    private func channelPicker(_ index: Int, channel: ChannelPack.Channel) -> some View {
+        let layers = snapshot?.manifest.layers ?? []
+        return Picker(channel.rawValue, selection: $channels[index]) {
+            Text("Black").tag(ChannelPack.Source.black)
+            Text("White").tag(ChannelPack.Source.white)
+            Divider()
+            ForEach(layers.reversed().filter { $0.adjustment == nil }, id: \.id) { layer in
+                Text(layer.name).tag(ChannelPack.Source.layer(layer.id))
+            }
+        }
+        .labelsHidden().frame(width: 260)
+        .help("What fills the \(channel.rawValue.lowercased()) channel: a layer or group read as grayscale, or solid black or white")
     }
 
     private func sizeField(_ value: Int, set: @escaping (Int) -> Void) -> some View {

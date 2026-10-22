@@ -7,6 +7,11 @@ nonisolated enum AdjustmentKind: String, Codable, CaseIterable, Sendable {
     case gaussianBlur = "Gaussian Blur", motionBlur = "Motion Blur"
     case invert = "Invert"
     case blackWhite = "Black & White", colorBalance = "Color Balance"
+    case progressiveBlur = "Progressive Blur", bloomGlow = "Bloom / Glow", rgbSplit = "RGB Split"
+    /// The menus' two groups, each in the order of the menu it comes from: the Image menu's color adjustments, then
+    /// the Filter menu's filters.
+    static let imageAdjustments: [Self] = [.curves, .levels, .hsv, .blackWhite, .colorBalance, .exposure, .gradientMap, .grain, .invert]
+    static let filters: [Self] = [.gaussianBlur, .motionBlur, .progressiveBlur, .addNoise, .bloomGlow, .rgbSplit]
     var symbol: String {
         switch self {
         case .curves: return "point.topleft.down.to.point.bottomright.curvepath"
@@ -21,6 +26,9 @@ nonisolated enum AdjustmentKind: String, Codable, CaseIterable, Sendable {
         case .invert: return "circle.righthalf.filled"
         case .blackWhite: return "circle.filled.pattern.diagonalline.rectangle"
         case .colorBalance: return "scale.3d"
+        case .progressiveBlur: return "aqi.medium"
+        case .bloomGlow: return "sun.max"
+        case .rgbSplit: return "rainbow"
         }
     }
     /// The filter panel that edits this kind; Levels and Hue/Saturation have panels of their own.
@@ -37,6 +45,9 @@ nonisolated enum AdjustmentKind: String, Codable, CaseIterable, Sendable {
         case .gaussianBlur: return .gaussianBlur
         case .motionBlur: return .motionBlur
         case .addNoise: return .addNoise
+        case .progressiveBlur: return .progressiveBlur
+        case .bloomGlow: return .bloomGlow
+        case .rgbSplit: return .rgbSplit
         // Hue/Saturation and Levels have panels of their own; Invert has nothing to set.
         case .hsv, .levels, .invert: return nil
         }
@@ -69,6 +80,13 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
     var noiseGaussian: Bool?
     var noiseMonochromatic: Bool?
     var noiseSeed: UInt32?
+    // Optional so projects from before these filter layers (version 16) decode and save unchanged.
+    var filterLayerSettings: FilterLayerSettings?
+    /// Progressive Blur, Bloom / Glow and RGB Split's settings.
+    var filterLayer: FilterLayerSettings {
+        get { filterLayerSettings ?? FilterLayerSettings() }
+        set { filterLayerSettings = newValue }
+    }
     var exposure: ExposureSettings {
         get { exposureSettings ?? ExposureSettings() }
         set { exposureSettings = newValue }
@@ -122,6 +140,8 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
         switch kind {
         case .gaussianBlur: return CGFloat(gaussianRadius * 3 + 2)
         case .motionBlur: return CGFloat(resolvedMotionDistance / 2 + 2)
+        case .progressiveBlur, .bloomGlow, .rgbSplit:
+            return FilterEdit.blurMargin(kind.filterKind ?? .bloomGlow, filterLayer.applied(to: FilterSettings()))
         default: return 0
         }
     }
@@ -138,6 +158,7 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
         && resolvedMotionAngle.isFinite && (-90...90).contains(resolvedMotionAngle)
         && resolvedMotionDistance.isFinite && (1...2000).contains(resolvedMotionDistance)
         && resolvedNoiseAmount.isFinite && (0.1...400).contains(resolvedNoiseAmount)
+        && filterLayer.isValid
     }
     /// `region` is the part of the document `image` covers (the whole image at one unit per pixel when
     /// omitted), so Grain's pattern stays fixed in the document however the canvas splits its drawing.
@@ -154,7 +175,9 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
     /// Exposure exactly on HDR ones; through its color lookup when its channels mix; otherwise run several times and
     /// read between (`DeepLayer.run`).
     func applySixteenBit(_ image: CGImage, region: CGRect? = nil, scale: CGFloat = 1) throws -> CGImage {
-        if kind == .gaussianBlur || kind == .motionBlur { return try apply(image, region: region, scale: scale, sixteenBit: true) }
+        if [.gaussianBlur, .motionBlur, .progressiveBlur, .bloomGlow].contains(kind) {
+            return try apply(image, region: region, scale: scale, sixteenBit: true)
+        }
         if kind == .exposure, DeepLayer.isHDR(image) { return try DeepLayer.exposure(image, exposure) }
         if let lookup = sixteenBitLookup { return try DeepLayer.lookup(image, cube: lookup.cube, dimension: lookup.dimension) }
         return try DeepLayer.run(image) { try apply($0, region: region, scale: scale) }
@@ -197,6 +220,15 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
                                                                   y: $0.minY * CGFloat(image.height) / max(1, $0.height)) } ?? .zero)
             job.sixteenBit = sixteenBit && filterKind != .addNoise
             return try PixelFilter.run(job)
+        case .progressiveBlur, .bloomGlow, .rgbSplit:
+            // The positions are the document's: `region` places this image in it.
+            let region = region ?? CGRect(x: 0, y: 0, width: image.width, height: image.height)
+            let mapping = CGAffineTransform(a: region.width / CGFloat(max(1, image.width)), b: 0, c: 0,
+                                            d: region.height / CGFloat(max(1, image.height)), tx: region.minX, ty: region.minY)
+            var job = FilterJob(kind: kind.filterKind ?? .bloomGlow, image: image, settings: filterLayer.applied(to: FilterSettings()),
+                                scale: scale, selection: nil, mapping: mapping)
+            job.sixteenBit = sixteenBit && kind != .rgbSplit
+            return try PixelFilter.run(job)
         case .invert:
             return try PixelInvert.run(PixelInvert.Job(image: image, isMask: false,
                                                        pixelToDocument: .identity, selection: nil))
@@ -216,6 +248,16 @@ extension EditorSession {
         }
         if kind == .grain { adjustment.grain.seed = .random(in: .min ... .max) }
         if kind == .addNoise { adjustment.resolvedNoiseSeed = .random(in: .min ... .max) }
+        // Progressive Blur's line and RGB Split's center start on the canvas, as the filters' do on a layer.
+        let canvas = CGRect(origin: .zero, size: document.size)
+        if kind == .progressiveBlur {
+            adjustment.filterLayer.progressiveStart = CGPoint(x: canvas.midX, y: canvas.height * 0.35)
+            adjustment.filterLayer.progressiveEnd = CGPoint(x: canvas.midX, y: canvas.maxY)
+        }
+        if kind == .rgbSplit {
+            adjustment.filterLayer.rgbSplitCenter = CGPoint(x: canvas.midX, y: canvas.midY)
+            adjustment.filterLayer.rgbSplitReach = max(1, hypot(canvas.width, canvas.height) / 2)
+        }
         layer.adjustment = adjustment
         layer.parentID = activeLayer?.isGroup == true ? activeLayerID : activeLayer?.parentID
         let index = document.layers.firstIndex { $0.id == activeLayerID }.map { $0 + 1 } ?? document.layers.count
@@ -231,5 +273,53 @@ extension EditorSession {
         guard let index = document?.layers.firstIndex(where: { $0.id == id }), value.isValid else { return }
         document?.layers[index].adjustment = value
         brushRevision += 1
+    }
+}
+
+/// The settings a Progressive Blur, Bloom / Glow or RGB Split adjustment layer keeps: those of its filter (see
+/// `FilterSettings`), positions in the document's pixels.
+nonisolated struct FilterLayerSettings: Codable, Equatable, Sendable {
+    var progressiveFrom: Double = 0
+    var progressiveTo: Double = 20
+    var progressiveStart: CGPoint?
+    var progressiveEnd: CGPoint?
+    var progressiveRadial = false
+    var progressiveInverted = false
+    var bloomAmount: Double = 40
+    var bloomRadius: Double = 24
+    var rgbSplitDistance: Double = 10
+    var rgbSplitBlur: Double = 0
+    var rgbSplitAngle: Double = 0
+    var rgbSplitRadial = false
+    var rgbSplitCenter: CGPoint?
+    var rgbSplitReach: Double = 1000
+
+    init() {}
+    init(_ settings: FilterSettings) {
+        let settings = settings.normalized
+        progressiveFrom = settings.progressiveFrom; progressiveTo = settings.progressiveTo
+        progressiveStart = settings.progressiveStart; progressiveEnd = settings.progressiveEnd
+        progressiveRadial = settings.progressiveRadial; progressiveInverted = settings.progressiveInverted
+        bloomAmount = settings.bloomAmount; bloomRadius = settings.bloomRadius
+        rgbSplitDistance = settings.rgbSplitDistance; rgbSplitBlur = settings.rgbSplitBlur; rgbSplitAngle = settings.rgbSplitAngle
+        rgbSplitRadial = settings.rgbSplitRadial; rgbSplitCenter = settings.rgbSplitCenter; rgbSplitReach = settings.rgbSplitReach
+    }
+
+    /// `settings` with these in place of its own.
+    func applied(to settings: FilterSettings) -> FilterSettings {
+        var settings = settings
+        settings.progressiveFrom = progressiveFrom; settings.progressiveTo = progressiveTo
+        settings.progressiveStart = progressiveStart; settings.progressiveEnd = progressiveEnd
+        settings.progressiveRadial = progressiveRadial; settings.progressiveInverted = progressiveInverted
+        settings.bloomAmount = bloomAmount; settings.bloomRadius = bloomRadius
+        settings.rgbSplitDistance = rgbSplitDistance; settings.rgbSplitBlur = rgbSplitBlur; settings.rgbSplitAngle = rgbSplitAngle
+        settings.rgbSplitRadial = rgbSplitRadial; settings.rgbSplitCenter = rgbSplitCenter; settings.rgbSplitReach = rgbSplitReach
+        return settings
+    }
+
+    /// Within the ranges the filters take, every number finite.
+    var isValid: Bool {
+        let points = [progressiveStart, progressiveEnd, rgbSplitCenter].compactMap { $0 }
+        return self == Self(applied(to: FilterSettings())) && points.allSatisfy { $0.x.isFinite && $0.y.isFinite }
     }
 }
