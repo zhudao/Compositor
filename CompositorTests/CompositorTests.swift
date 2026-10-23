@@ -193,6 +193,19 @@ struct CompositorTests {
         #expect(session.viewport.pan == .zero)
     }
 
+    /// Canvas Size keeps the zoom too, so added or trimmed canvas shows as such.
+    @Test func canvasSizeKeepsTheZoom() async throws {
+        let session = EditorSession()
+        session.viewport.resize(to: CGSize(width: 1000, height: 800), backingScale: 2, documentSize: nil)
+        session.createDocument(width: 600, height: 400, emptyLayer: true)
+        let zoom = session.viewport.zoom
+        let resized = try await CanvasResizer.shared.resize(try #require(session.projectSnapshot()),
+                                                            to: CanvasSizeOptions(width: 300, height: 200))
+        session.applyDocumentSize(resized, actionName: "Canvas Size", keepingZoom: true)
+        #expect(session.document?.size == CGSize(width: 300, height: 200))
+        #expect(session.viewport.zoom == zoom)
+    }
+
     @Test func limitsAndNewDocumentReset() {
         let session = EditorSession()
         session.viewport.resize(to: CGSize(width: 800, height: 600), backingScale: 2, documentSize: nil)

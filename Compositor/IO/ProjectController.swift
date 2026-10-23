@@ -53,7 +53,7 @@ final class ProjectController {
         catch { await showError("Couldn’t export PNG", error: error) }
     }
 
-    /// File › Export As…: PNG, JPEG or a one-page PDF, at the canvas's size or scaled, previewed first. Export JPEG…
+    /// File › Export As…: still images or animation timelines, sized and previewed first. Export JPEG…
     /// opens it on JPEG.
     func exportAs(start: ExportFormat? = nil) async {
         guard let window, session.document != nil, begin() else { return }
@@ -126,7 +126,7 @@ final class ProjectController {
         guard let options, let snapshot = session.projectSnapshot() else { return }
         do {
             let resized = try await CanvasResizer.shared.resize(snapshot, to: options)
-            session.applyDocumentSize(resized, actionName: "Canvas Size")
+            session.applyDocumentSize(resized, actionName: "Canvas Size", keepingZoom: true)
         } catch { await showError("Couldn’t change canvas size", error: error) }
     }
 
@@ -415,13 +415,15 @@ final class ProjectController {
 
 /// What File › Export As… writes.
 enum ExportFormat: String, CaseIterable {
-    case png = "PNG", jpeg = "JPEG", tiff = "TIFF", pdf = "PDF", exr = "EXR"
+    // In the order Export As lists them: GIF after PDF, as fewer need it.
+    case png = "PNG", jpeg = "JPEG", tiff = "TIFF", pdf = "PDF", gif = "GIF", exr = "EXR"
     /// Layers packed into a PNG's red, green, blue and alpha, for game textures (see `ChannelPack`).
     case channelPack = "Channel Pack"
     var type: UTType {
         switch self {
         case .png, .channelPack: .png
         case .jpeg: .jpeg
+        case .gif: .gif
         case .tiff: .tiff
         case .pdf: .pdf
         case .exr: .openEXR
