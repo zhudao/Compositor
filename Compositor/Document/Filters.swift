@@ -14,6 +14,7 @@ nonisolated enum FilterKind: String, CaseIterable, Sendable {
     case dither = "Dither"
     case scanlines = "Scanlines"
     case rgbSplit = "RGB Split"
+    case lensEffects = "Lens Effects"
     case tonalContrast = "Tonal Contrast"
     case lensCorrection = "Lens Correction"
     case cameraRaw = "Camera Raw Filter"
@@ -31,7 +32,7 @@ nonisolated enum FilterKind: String, CaseIterable, Sendable {
     /// Filters made wholly in Core Image, which works at 16 bits as readily as at 8: a 16-bit layer runs them once, on its
     /// 16-bit pixels, rather than three times through `DeepLayer.run`.
     var runsAtSixteenBits: Bool {
-        self == .gaussianBlur || self == .motionBlur || self == .progressiveBlur || self == .bloomGlow
+        self == .gaussianBlur || self == .motionBlur || self == .progressiveBlur || self == .bloomGlow || self == .lensEffects
     }
     /// Filters whose output channels each depend on all three input channels (Camera Raw's color, and the ones that work
     /// from brightness), which a 16-bit layer runs the slower, channel-by-channel way (`DeepLayer.run`).
@@ -122,6 +123,7 @@ nonisolated struct FilterSettings: Equatable, Sendable {
     /// Lens Correction's Remove Distortion, −100–100: positive straightens barrel distortion
     /// (lines bowing outward), negative straightens pincushion (lines bowing inward).
     var distortion: Double = 0
+    var lens = LensEffectSettings()
     var curves = CurvesSettings()
     var exposure = ExposureSettings()
     var gradientMap = GradientMapSettings()
@@ -176,6 +178,7 @@ nonisolated struct FilterSettings: Equatable, Sendable {
         result.grain = grain.normalized
         result.dither = dither.normalized
         result.scanlines = scanlines.normalized
+        result.lens = lens.normalized
         result.cameraRaw = cameraRaw.normalized
         return result
     }
@@ -343,6 +346,7 @@ nonisolated enum PixelFilter {
         case .progressiveBlur:
             image = try render(progressivelyBlurred(edges, job: job, settings: settings, extent: extent).cropped(to: extent), job: job)
         case .rgbSplit: image = try rgbSplit(job, settings: settings)
+        case .lensEffects: image = try render(settings.lens.apply(to: job.image), job: job)
         case .motionBlur:
             // Core Image's y axis points up, so its counterclockwise angle matches Photoshop's.
             let streaked = extending(edges, past: job.canvasSides, of: extent).applyingFilter("CIMotionBlur", parameters: [
@@ -946,6 +950,7 @@ extension EditorSession {
         if (edit.kind == .lensCorrection && edit.settings.distortion == 0)
             || (edit.kind == .vignette && edit.settings.vignetteAmount == 0)
             || (edit.kind == .bloomGlow && edit.settings.bloomAmount == 0)
+            || (edit.kind == .lensEffects && edit.settings.lens.isIdentity)
             || (edit.kind == .tonalContrast && (edit.settings.tonalAmount == 0 ||
                 (edit.settings.tonalShadows == 0 && edit.settings.tonalMidtones == 0 && edit.settings.tonalHighlights == 0)))
             || (edit.kind == .exposure && edit.settings.exposure == ExposureSettings())

@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import CoreGraphics
 
 /// Encoded frames and small previews are immutable and shared by layers, history and background saves.
@@ -20,6 +21,20 @@ nonisolated final class GIFSource: @unchecked Sendable {
     }
 
     var thumbnailPixels: Int { frames.reduce(0) { $0 + $1.thumbnail.width * $1.thumbnail.height } }
+
+    /// One reader kept open for every frame read. A GIF frame is often only the part that changed, so a new reader
+    /// rebuilds it from the first frame on each read (tens of milliseconds, too slow to play), while this one carries
+    /// on from the frame it read last.
+    private var reader: CGImageSource?
+    private let readerLock = NSLock()
+
+    func withReader<T>(_ body: (CGImageSource) throws -> T) throws -> T {
+        try readerLock.withLock {
+            if reader == nil { reader = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) }
+            guard let reader else { throw ImageImportError.unreadable }
+            return try body(reader)
+        }
+    }
 }
 
 /// Image Size's rasterization, applied lazily to every frame, including rotation and uneven scaling.

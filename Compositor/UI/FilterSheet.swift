@@ -129,6 +129,8 @@ struct FilterSheet: View {
                     control("Angle", \.rgbSplitAngle, range: -180...180, unit: "°", decimals: 0, logarithmic: false)
                         .help("Which way the colors spread")
                 }
+            case .lensEffects:
+                lensEffectsControls
             case .motionBlur:
                 control("Angle", \.angle, range: -90...90, unit: "°", decimals: 0, logarithmic: false)
                 control("Distance", \.distance, range: 1...2000, unit: "px", decimals: 0, logarithmic: true)
@@ -354,6 +356,72 @@ struct FilterSheet: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+
+    /// Lens Effects: which effect, then its own settings.
+    @ViewBuilder private var lensEffectsControls: some View {
+        HStack(spacing: 10) {
+            Text("Effect")
+            Picker("Effect", selection: Binding(get: { settings.lens.effect }, set: { new in update { $0.lens.effect = new } })) {
+                ForEach(LensEffect.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .labelsHidden().fixedSize()
+        }
+        switch settings.lens.effect {
+        case .anamorphicFlare:
+            control("Amount", \.lens.flareAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            control("Length", \.lens.flareLength, range: 1...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far the streaks reach across the picture")
+            control("Threshold", \.lens.threshold, range: 50...99, unit: "%", decimals: 0, logarithmic: false)
+                .help("How bright a light has to be to flare")
+            control("Blue", \.lens.flareBlue, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far the lens's coatings turn each streak blue along its length; none keeps the light's own color")
+        case .starburst:
+            control("Amount", \.lens.starAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            control("Length", \.lens.starLength, range: 2...40, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far the spikes reach")
+            control("Threshold", \.lens.threshold, range: 50...99, unit: "%", decimals: 0, logarithmic: false)
+                .help("How bright a light has to be to sparkle")
+            control("Angle", \.lens.starAngle, range: -180...180, unit: "°", decimals: 0, logarithmic: false)
+            HStack(spacing: 10) {
+                Text("Points")
+                Picker("Points", selection: Binding(get: { settings.lens.starPoints }, set: { new in update { $0.lens.starPoints = new } })) {
+                    ForEach(LensEffectSettings.starPointChoices, id: \.self) { Text("\($0)").tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .help("How many spikes each light has, as the lens's aperture blades make them")
+            }
+        case .mist:
+            control("Strength", \.lens.mistStrength, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How much light scatters: a soft halo around bright areas, and gently lifted shadows")
+            control("Size", \.lens.mistSize, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far the light spreads")
+        case .prism:
+            control("Amount", \.lens.prismAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            control("Copies", \.lens.prismCopies, range: 1...8, unit: "", decimals: 0, logarithmic: false)
+                .help("How many times the picture echoes, each fainter")
+            control("Offset", \.lens.prismOffset, range: 0...50, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far apart the copies are")
+            control("Angle", \.lens.prismAngle, range: -180...180, unit: "°", decimals: 0, logarithmic: false)
+                .help("Which way it's pushed, toward the edge the prism sits at")
+            control("Reach", \.lens.prismSpread, range: 10...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far into the frame the copies show from that edge")
+        case .bokeh:
+            control("Size", \.lens.bokehRadius, range: LensEffectSettings.bokehSizes, unit: "%", decimals: 1, logarithmic: false)
+                .help("How far out of focus: the size of each disc")
+            control("Brightness", \.lens.bokehBrightness, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How brightly lights open into discs")
+            control("Ring", \.lens.bokehRing, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("Light gathered at each disc's rim, as some lenses draw it")
+            HStack(spacing: 10) {
+                Text("Shape")
+                Picker("Shape", selection: Binding(get: { settings.lens.bokehShape }, set: { new in update { $0.lens.bokehShape = new } })) {
+                    ForEach(BokehShape.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+                .help("The aperture's shape: round wide open, a hexagon of blades, an anamorphic oval, or a cat's eye toward the edges")
+            }
+        }
     }
 
     private func flag(_ key: WritableKeyPath<FilterSettings, Bool>) -> Binding<Bool> {

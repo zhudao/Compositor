@@ -137,8 +137,9 @@ kernel void disperse(texture2d<float, access::sample> image [[texture(0)]],
         float t = n == 1 ? 0.0 : (float(i) + jitter) / float(n) * 2.0 - 1.0;
         float3 weight = float3(smoothstep(-0.3, 1.0, t), 1.0 - smoothstep(0.0, 1.0, abs(t)) + 0.05, smoothstep(-0.3, 1.0, -t));
         for (uint j = 0; j < m; j++) {
-            // Each streak trails back along the split, so the image smears out in its direction.
-            float u = m == 1 ? 0.0 : (float(j) + jitter) / float(m);
+            // Each streak runs both ways along the split, centered on the pixel, so the image smears out without
+            // shifting one way.
+            float u = m == 1 ? 0.0 : (float(j) + jitter) / float(m) - 0.5;
             float4 c = tap(image, at - spread * t - streak * u, size, p);
             color += weight * c.rgb;
             alpha += weight * c.a;

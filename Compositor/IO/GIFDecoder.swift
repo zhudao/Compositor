@@ -45,11 +45,12 @@ nonisolated enum GIFDecoder {
         }
         if let edited = animation.framePixels[index] { return edited }
         return try autoreleasepool {
-            guard let reader = CGImageSourceCreateWithData(animation.source.data as CFData,
-                [kCGImageSourceShouldCache: false] as CFDictionary) else { throw ImageImportError.unreadable }
-            _ = try frameSize(reader, index: sourceIndex)
-            guard let decoded = CGImageSourceCreateImageAtIndex(reader, sourceIndex,
-                [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { throw ImageImportError.unreadable }
+            let decoded = try animation.source.withReader { reader in
+                _ = try frameSize(reader, index: sourceIndex)
+                guard let decoded = CGImageSourceCreateImageAtIndex(reader, sourceIndex,
+                    [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { throw ImageImportError.unreadable }
+                return decoded
+            }
             let width = animation.geometry?.width ?? decoded.width
             let height = animation.geometry?.height ?? decoded.height
             let context = try BrushRaster.context(width: width, height: height, mask: false)

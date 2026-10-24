@@ -3,19 +3,16 @@
   <channel>
     <title>Compositor</title>
     <item>
-      <title>Version 1.5.5</title>
-      <pubDate>Wed, 21 Oct 2026 22:09:13 +0000</pubDate>
-      <sparkle:version>51</sparkle:version>
-      <sparkle:shortVersionString>1.5.5</sparkle:shortVersionString>
+      <title>Version 1.5.7</title>
+      <pubDate>Fri, 23 Oct 2026 18:06:46 +0000</pubDate>
+      <sparkle:version>53</sparkle:version>
+      <sparkle:shortVersionString>1.5.7</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.5</link>
-      <changes><![CDATA[Filter › RGB Split: rainbow dispersion, linear or radial, with blur streaks.
-Progressive Blur, Bloom / Glow and RGB Split as adjustment layers.
-Export As › Channel Pack packs layers into a PNG's red, green, blue and alpha, for game textures.
-Photoshop artboards each open in a tab of their own.
-Copy and paste work in file names when saving, and shortcuts work on non-Latin keyboards.
-Image Size keeps the zoom, and small images open at 100%.]]></changes>
-      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.5/Compositor.dmg" sparkle:edSignature="TGExBpK96Swny/lx2IICL1Kq8WyJFc8z48JlLL9CEklE79plJVxcYBAvhmrNu3Ermm2i2ddgmHSdCtfV8yjaAQ==" length="8330075" type="application/octet-stream"/>
+      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.7</link>
+      <changes><![CDATA[- Filter › Lens Effects: anamorphic flare, starburst, mist, prism, and bokeh in round, hexagon, oval or cat's-eye shapes, all made from the picture's own light.
+- GIFs play at their real speed and smoothly, and the delay shows the GIF's own milliseconds.
+- Filter › RGB Split's blur smears both ways, so the image no longer looks shifted.]]></changes>
+      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.7/Compositor.dmg" sparkle:edSignature="vTkm/8PuTkp5nH3f3FRD5jCrIokN4rx6bKHpmNVzNOBfuymIPwBSdrQrC9qn3uB+/mcGxASJOWYPXeT+LlfzCg==" length="8537385" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>

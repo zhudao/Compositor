@@ -37,7 +37,7 @@ struct GIFTimeline: View {
                 .help(isPlaying ? "Pause" : "Play")
                 // The delay as a menu of common ones, as the Layers panel's adjustment button offers its kinds.
                 Menu { delayMenu } label: {
-                    Text(timing.mode == .uniform ? "\(Int(delay.rounded()))ms" : "Original")
+                    Text(timing.mode == .uniform ? "\(Int(delay.rounded()))ms" : originalDelays(spaced: false))
                         .font(.system(size: 13)).foregroundStyle(.secondary)
                 }
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
@@ -61,7 +61,7 @@ struct GIFTimeline: View {
                 }
             }
         }
-        // While playing, each frame shows for its delay and then the next, round and round.
+        // Decoding must not lengthen the layer's saved frame delays.
         .task(id: Playback(isPlaying: isPlaying, frames: frames.map(\.index), timing: timing)) { await play() }
         .onChange(of: canPlay) { if !canPlay, isPlaying { onStopPlayback() } }
         .onDisappear { onStopPlayback() }
@@ -73,15 +73,16 @@ struct GIFTimeline: View {
         let timing: GIFFrameTiming
     }
 
-    private func play() async {
+    func play<C: Clock>(clock: C = ContinuousClock()) async where C.Duration == Duration {
         guard isPlaying, frames.count > 1 else { return }
-        var position = frames.firstIndex { $0.index == selectedFrameIndex } ?? 0
-        while !Task.isCancelled {
-            let delay = max(GIFTimelineLimits.minimumFrameDuration, timing.delay(for: frames[position]))
-            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-            position = (position + 1) % frames.count
-            await onSelectFrame(frames[position].index)
-        }
+        let durations = frames.map { max(GIFTimelineLimits.minimumFrameDuration, timing.delay(for: $0)) }
+        let initial = frames.firstIndex { $0.index == selectedFrameIndex } ?? 0
+        do {
+            try await GIFPreviewPlayback.play(durations: durations, startingAt: initial, clock: clock) { position in
+                await onSelectFrame(frames[position].index)
+            }
+        } catch is CancellationError { }
+        catch { onStopPlayback() }
     }
 
     private func thumbnail(_ frame: GIFTimelineFrame, number: Int) -> some View {
@@ -110,7 +111,7 @@ struct GIFTimeline: View {
 
     /// Every frame for the same time, from a fast 20 ms up to a second, or each for the GIF's own.
     @ViewBuilder private var delayMenu: some View {
-        Toggle("Original", isOn: Binding(get: { timing.mode != .uniform }, set: { on in
+        Toggle("\(originalDelays()) · Original", isOn: Binding(get: { timing.mode != .uniform }, set: { on in
             guard on else { return }
             var original = timing
             original.mode = .perFrame
@@ -122,6 +123,14 @@ struct GIFTimeline: View {
                 get: { timing.mode == .uniform && Int(delay.rounded()) == milliseconds },
                 set: { if $0 { setDelay(Double(milliseconds)) } }))
         }
+    }
+
+    /// The GIF's own delays: one, or the shortest to the longest when its frames differ. The menu spaces the unit
+    /// as its presets do; the label under the play button doesn't.
+    private func originalDelays(spaced: Bool = true) -> String {
+        let delays = frames.map { Int(((timing.frameDelays[$0.index] ?? $0.duration) * 1000).rounded()) }
+        guard let shortest = delays.min(), let longest = delays.max() else { return "" }
+        return (shortest == longest ? "\(shortest)" : "\(shortest)–\(longest)") + (spaced ? " ms" : "ms")
     }
 
     private func fps(_ milliseconds: Int) -> String {
