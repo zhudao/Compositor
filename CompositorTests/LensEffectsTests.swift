@@ -89,19 +89,32 @@ struct LensEffectsTests {
         #expect((try color(misted, 10, 10))[1] <= (try color(original, 10, 10))[1] + 3, "far corners barely lift")
     }
 
-    @Test func prismGhostsACopyAtItsEdge() throws {
+    @Test func prismGhostsASharpCopy() throws {
         let original = try night()
-        // Pushed left by a quarter of the width: the light's copy lands near the left edge.
-        let ghosted = try run { $0.effect = .prism; $0.prismAngle = 180; $0.prismOffset = 25; $0.prismSpread = 60; $0.prismAmount = 100 }
+        // Pushed left by a quarter of the width: the light's copy lands 100 pixels left of it, and stays crisp.
+        let ghosted = try run { $0.effect = .prism; $0.prismAngle = 180; $0.prismOffset = 25; $0.prismCopies = 1; $0.prismAmount = 100 }
         #expect((try color(ghosted, 100, 120))[1] > (try color(original, 100, 120))[1] + 20)
-        #expect((try color(ghosted, 300, 120)) == (try color(original, 300, 120)), "the far side is untouched")
+        #expect((try color(ghosted, 70, 120)) == (try color(original, 70, 120)), "a sharp copy, not a smear")
+        #expect((try color(ghosted, 300, 120)) == (try color(original, 300, 120)), "the other side is untouched")
+    }
+
+    @Test func prismBothWaysEchoesOnEachSide() throws {
+        let original = try night()
+        func echo(_ bothWays: Bool) throws -> (left: Int, right: Int) {
+            let image = try run { $0.effect = .prism; $0.prismAngle = 180; $0.prismOffset = 25; $0.prismCopies = 1; $0.prismAmount = 100; $0.prismBothWays = bothWays }
+            return ((try color(image, 100, 120))[1] - (try color(original, 100, 120))[1],
+                    (try color(image, 300, 120))[1] - (try color(original, 300, 120))[1])
+        }
+        let one = try echo(false), both = try echo(true)
+        #expect(one.left > 20 && one.right == 0)
+        #expect(both.left > 20 && both.right > 20)
     }
 
     @Test func prismCopiesEchoFartherOut() throws {
         let original = try night()
         // Copies 40 pixels apart, leftwards from the light at 190–210: the third lands around 80–90.
         func echo(_ copies: Double) throws -> Int {
-            let image = try run { $0.effect = .prism; $0.prismCopies = copies; $0.prismOffset = 10; $0.prismSpread = 100; $0.prismAmount = 100 }
+            let image = try run { $0.effect = .prism; $0.prismCopies = copies; $0.prismOffset = 10; $0.prismAmount = 100 }
             return (try color(image, 85, 120))[1] - (try color(original, 85, 120))[1]
         }
         #expect(try echo(1) <= 2)
@@ -123,6 +136,14 @@ struct LensEffectsTests {
         let up = (try color(oval, 200, 120 - 34))[1] - (try color(original, 200, 120 - 34))[1]
         let side = (try color(oval, 200 + 34, 120))[1] - (try color(original, 200 + 34, 120))[1]
         #expect(up > side + 10, "up \(up), sideways \(side)")
+    }
+
+    @Test func prismWithoutOffsetStillApplies() {
+        var settings = LensEffectSettings()
+        settings.effect = .prism
+        settings.prismOffset = 0
+        // Its copies still fringe the picture, as the preview shows, so OK has to keep them.
+        #expect(!settings.isIdentity)
     }
 
     @Test func noAmountIsNothingToDo() {

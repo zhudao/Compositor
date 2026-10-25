@@ -3,16 +3,16 @@
   <channel>
     <title>Compositor</title>
     <item>
-      <title>Version 1.5.7</title>
-      <pubDate>Fri, 23 Oct 2026 18:06:46 +0000</pubDate>
-      <sparkle:version>53</sparkle:version>
-      <sparkle:shortVersionString>1.5.7</sparkle:shortVersionString>
+      <title>Version 1.5.8</title>
+      <pubDate>Sat, 24 Oct 2026 04:48:14 +0000</pubDate>
+      <sparkle:version>54</sparkle:version>
+      <sparkle:shortVersionString>1.5.8</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.7</link>
-      <changes><![CDATA[- Filter › Lens Effects: anamorphic flare, starburst, mist, prism, and bokeh in round, hexagon, oval or cat's-eye shapes, all made from the picture's own light.
-- GIFs play at their real speed and smoothly, and the delay shows the GIF's own milliseconds.
-- Filter › RGB Split's blur smears both ways, so the image no longer looks shifted.]]></changes>
-      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.7/Compositor.dmg" sparkle:edSignature="vTkm/8PuTkp5nH3f3FRD5jCrIokN4rx6bKHpmNVzNOBfuymIPwBSdrQrC9qn3uB+/mcGxASJOWYPXeT+LlfzCg==" length="8537385" type="application/octet-stream"/>
+      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.8</link>
+      <changes><![CDATA[Projects saved by 1.5.4 and 1.5.5 open again.
+Filter › Lens Effects: Prism copies stay crisp and echo into the shadows, one way or both, with Blur in place of Reach.
+Lens Effects' Threshold goes to 100%, down to just the brightest one or two lights.]]></changes>
+      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.8/Compositor.dmg" sparkle:edSignature="1ooGzsFahg2XNc19yBDci4ICIRb5qTFq6w2Jy5P5O2Tql1oy5Tc6hdlCJD2/+zIefkiq4uzzrLT7li916iAoDQ==" length="8539058" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>

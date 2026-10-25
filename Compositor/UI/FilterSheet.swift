@@ -372,16 +372,16 @@ struct FilterSheet: View {
             control("Amount", \.lens.flareAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
             control("Length", \.lens.flareLength, range: 1...100, unit: "%", decimals: 0, logarithmic: false)
                 .help("How far the streaks reach across the picture")
-            control("Threshold", \.lens.threshold, range: 50...99, unit: "%", decimals: 0, logarithmic: false)
-                .help("How bright a light has to be to flare")
+            control("Threshold", \.lens.threshold, range: 50...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How bright a light has to be to flare; near 100, only the biggest, brightest spots")
             control("Blue", \.lens.flareBlue, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                 .help("How far the lens's coatings turn each streak blue along its length; none keeps the light's own color")
         case .starburst:
             control("Amount", \.lens.starAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
             control("Length", \.lens.starLength, range: 2...40, unit: "%", decimals: 0, logarithmic: false)
                 .help("How far the spikes reach")
-            control("Threshold", \.lens.threshold, range: 50...99, unit: "%", decimals: 0, logarithmic: false)
-                .help("How bright a light has to be to sparkle")
+            control("Threshold", \.lens.threshold, range: 50...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How bright a light has to be to sparkle; near 100, only the biggest, brightest spots")
             control("Angle", \.lens.starAngle, range: -180...180, unit: "°", decimals: 0, logarithmic: false)
             HStack(spacing: 10) {
                 Text("Points")
@@ -403,9 +403,18 @@ struct FilterSheet: View {
             control("Offset", \.lens.prismOffset, range: 0...50, unit: "%", decimals: 0, logarithmic: false)
                 .help("How far apart the copies are")
             control("Angle", \.lens.prismAngle, range: -180...180, unit: "°", decimals: 0, logarithmic: false)
-                .help("Which way it's pushed, toward the edge the prism sits at")
-            control("Reach", \.lens.prismSpread, range: 10...100, unit: "%", decimals: 0, logarithmic: false)
-                .help("How far into the frame the copies show from that edge")
+                .help("Which way the copies step")
+            control("Blur", \.lens.prismBlur, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("Soften the copies, more the farther they're pushed")
+            HStack(spacing: 10) {
+                Text("Direction")
+                Picker("Direction", selection: Binding(get: { settings.lens.prismBothWays }, set: { new in update { $0.lens.prismBothWays = new } })) {
+                    Text("One Way").tag(false)
+                    Text("Both Ways").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .help("Copies to one side of the picture, or out to both")
+            }
         case .bokeh:
             control("Size", \.lens.bokehRadius, range: LensEffectSettings.bokehSizes, unit: "%", decimals: 1, logarithmic: false)
                 .help("How far out of focus: the size of each disc")

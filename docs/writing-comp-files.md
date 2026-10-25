@@ -129,7 +129,7 @@ An adjustment layer has an `adjustment` object and no `imageFile`, and it affect
 ```
 
 - `ranges` and `channels` run RGB, then red, green, blue. Curve points run from x 0 to x 255, in increasing x.
-- `kind` is one of `Hue/Saturation`, `Levels`, `Curves`, `Exposure`, `Gradient Map`, `Grain`, `Invert`, `Black & White`, `Color Balance`, `Gaussian Blur`, `Motion Blur`, `Add Noise`, and from manifest `version` 16, `Progressive Blur`, `Bloom / Glow` and `RGB Split`, whose settings go in a `filterLayerSettings` object (fields and ranges in [project-format.md](project-format.md), version 16).
+- `kind` is one of `Hue/Saturation`, `Levels`, `Curves`, `Exposure`, `Gradient Map`, `Grain`, `Invert`, `Black & White`, `Color Balance`, `Gaussian Blur`, `Motion Blur`, `Add Noise`, from manifest `version` 16 `Progressive Blur`, `Bloom / Glow` and `RGB Split`, and from 18 `Vignette`, `Lens Effects` and `Tonal Contrast`, whose settings go in a `filterLayerSettings` object (fields and ranges in [project-format.md](project-format.md), versions 16 and 18).
 - For Hue/Saturation, set `hue`, `saturation` and `lightness` on the adjustment itself. Color Balance takes a `colorBalanceSettings` object (`shadowCyanRed`, `shadowMagentaGreen`, `shadowYellowBlue`, and the same for `mid` and `highlight`, each −100 to 100, plus `preserveLuminosity`).
 - For the other kinds, the easiest way to get the exact shape is to add one in Compositor, save, and copy it from that project's manifest.
 
@@ -140,6 +140,6 @@ An adjustment layer has an `adjustment` object and no `imageFile`, and it affect
 
 ## GIF layers
 
-Use version 17 and add a `gif` object with `sourceFile: "<id>.gif"` and a zero-based `selectedFrameIndex` to an ordinary image layer. Embed the original GIF under `images/`, and keep `imageFile: "<id>.png"` as the selected frame's unmasked pixels. Save assets before replacing the manifest.
+Use version 17 or later and add a `gif` object with `sourceFile: "<id>.gif"` and a zero-based `selectedFrameIndex` to an ordinary image layer. Embed the original GIF under `images/`, and keep `imageFile: "<id>.png"` as the selected frame's unmasked pixels. Save assets before replacing the manifest.
 
 Preserve existing geometry, frame order, edited frames and timing when editing a package; the layer's one mask applies to every frame, so never bake it into frame pixels. See [project-format.md](project-format.md) (version 17) for the fields and limits.

@@ -3146,7 +3146,7 @@ extension CanvasView {
         // An adjustment re-colors what's under it, through its own mask and its folders' masks, at its opacity.
         func adjusted(_ below: CIImage, by layer: ImageLayer, adjustment: LayerAdjustment, folders: Bool) -> CIImage? {
             guard var changed = GPUAdjustment.apply(adjustment, to: below, scale: placement.scale, mapping: placement.mapping,
-                                                    hdr: hasHDR)
+                                                    hdr: hasHDR, document: session.document?.size)
             else { return nil }
             // In a blend mode, the adjusted colors blend with the ones under them at full coverage, and the original
             // coverage comes back after — as LiveMaskRenderer does, so soft edges aren't thickened.

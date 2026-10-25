@@ -7,6 +7,10 @@ struct CompositorApp: App {
     @NSApplicationDelegateAdaptor(CompositorApplicationDelegate.self) private var applicationDelegate
     @AppStorage("navigator.visible") private var showsNavigator = false
     private var session: EditorSession { applicationDelegate.session }
+    private func filterMenuItem(_ kind: FilterKind) -> some View {
+        Button("\(kind.rawValue)…") { session.beginFilter(kind) }
+            .disabled(!(kind == .vignette ? session.canVignette : session.canAdjustColors) || session.hueSaturation != nil)
+    }
     var body: some Scene {
         Window("Compositor", id: "editor") {
             ProjectWorkspaceView(applicationDelegate: applicationDelegate).roundedControls()
@@ -340,10 +344,12 @@ struct CompositorApp: App {
                         // ⌃⌘F, as in Photoshop; ⌘F is the command palette.
                         .configuredKeyboardShortcut("f", modifiers: [.command, .control]).disabled(!session.canRepeatLastFilter)
                     Divider()
-                    ForEach(FilterKind.allCases.filter { $0 != .contentAwareFill && !$0.isImageAdjustment }, id: \.self) { kind in
-                        Button("\(kind.rawValue)…") { session.beginFilter(kind) }
-                            .disabled(!(kind == .vignette ? session.canVignette : session.canAdjustColors) || session.hueSaturation != nil)
-                    }
+                    // Those that can also be adjustment layers, in that menu's order, then the rest.
+                    let layered = AdjustmentKind.filters.compactMap(\.filterKind)
+                    let others = FilterKind.allCases.filter { $0 != .contentAwareFill && !$0.isImageAdjustment && !layered.contains($0) }
+                    ForEach(layered, id: \.self) { filterMenuItem($0) }
+                    Divider()
+                    ForEach(others, id: \.self) { filterMenuItem($0) }
                 }
                 CommandMenu("Layer") {
                     Menu("New Adjustment Layer") {

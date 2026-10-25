@@ -542,10 +542,12 @@ nonisolated enum GPUAdjustment {
     /// `hdr`: the document has an HDR layer, so what's below may be brighter than white. Exposure then works on its full
     /// range, and the tonal adjustments see each highlight divided down to within white and multiply their result back,
     /// as `LayerAdjustment.applySixteenBit` does for a merge or export.
+    /// `document`: the document's size, which Vignette frames and Lens Effects measures itself by; without it, `image`'s.
     static func apply(_ adjustment: LayerAdjustment, to image: CIImage, scale: CGFloat, mapping: CGAffineTransform,
-                      hdr: Bool = false) -> CIImage? {
+                      hdr: Bool = false, document: CGSize? = nil) -> CIImage? {
         if hdr, adjustment.kind == .exposure { return exposure(adjustment.exposure, to: image) }
-        if hdr, [.levels, .hsv, .curves, .blackWhite, .colorBalance, .gradientMap, .invert].contains(adjustment.kind) {
+        if hdr, [.levels, .hsv, .curves, .blackWhite, .colorBalance, .gradientMap, .invert, .vignette, .tonalContrast]
+            .contains(adjustment.kind) {
             // Worked on in straight colors at full coverage, so the blend filters' compositing leaves them alone; the
             // coverage goes back at the end.
             let extent = image.extent
@@ -555,7 +557,7 @@ nonisolated enum GPUAdjustment {
                 "inputMinComponents": CIVector(x: 1, y: 1, z: 1, w: 1), "inputMaxComponents": CIVector(x: 65504, y: 65504, z: 65504, w: 1)])
             let within = straight.applyingFilter("CIDivideBlendMode", parameters: [kCIInputBackgroundImageKey: straight,
                                                                                    kCIInputImageKey: brightest])
-            guard let changed = apply(adjustment, to: within, scale: scale, mapping: mapping) else { return nil }
+            guard let changed = apply(adjustment, to: within, scale: scale, mapping: mapping, document: document) else { return nil }
             return changed.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: brightest])
                 .applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(),
                                                                      kCIInputMaskImageKey: image])
@@ -604,6 +606,15 @@ nonisolated enum GPUAdjustment {
             ]).cropped(to: image.extent)
         case .progressiveBlur:
             return progressivelyBlurred(image, adjustment.filterLayer, scale: scale, mapping: mapping)
+        case .vignette:
+            let canvas = document.map { CGRect(origin: .zero, size: $0).applying(mapping) } ?? image.extent
+            return MetalFinishing.vignette(image, canvas: canvas, adjustment.filterLayer.resolvedVignette)
+        case .tonalContrast:
+            let tonal = adjustment.filterLayer.resolvedTonal
+            return MetalFinishing.tonalContrast(image, radius: tonal.radius * scale, tonal)
+        case .lensEffects:
+            let side = document.map { max($0.width, $0.height) * scale } ?? max(image.extent.width, image.extent.height)
+            return try? (adjustment.filterLayer.lens ?? LensEffectSettings()).apply(to: image, side: side)
         case .rgbSplit:
             let settings = adjustment.filterLayer
             let distance = settings.rgbSplitDistance * scale, blur = settings.rgbSplitBlur * scale

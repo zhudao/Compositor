@@ -3,7 +3,7 @@ import CoreImage
 import Testing
 @testable import Compositor
 
-/// Progressive Blur, Bloom / Glow and RGB Split as adjustment layers.
+/// Progressive Blur, Bloom / Glow, RGB Split, Vignette, Lens Effects and Tonal Contrast as adjustment layers.
 @MainActor
 struct FilterLayerTests {
     /// A white square in the middle of a clear 61 × 61 image, rows top-down.
@@ -85,6 +85,114 @@ struct FilterLayerTests {
     @Test func theCanvasDrawsThemOnTheGPU() {
         let image = CIImage(color: CIColor(red: 1, green: 1, blue: 1)).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
         for kind in [AdjustmentKind.progressiveBlur, .bloomGlow] + (MetalDispersion.shared == nil ? [] : [.rgbSplit]) {
+            #expect(GPUAdjustment.apply(LayerAdjustment(kind: kind), to: image, scale: 1, mapping: .identity) != nil, "\(kind)")
+        }
+    }
+
+    /// A gray picture with soft detail and one bright light, rows top-down.
+    private func scene(width: Int = 80, height: Int = 60) throws -> CGImage {
+        let context = try BrushRaster.context(width: width, height: height, mask: false)
+        context.setFillColor(CGColor(srgbRed: 0.45, green: 0.45, blue: 0.45, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(CGColor(srgbRed: 0.6, green: 0.6, blue: 0.6, alpha: 1))
+        context.fill(CGRect(x: 10, y: 10, width: 20, height: 30))
+        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 50, y: 25, width: 6, height: 6))
+        return try #require(context.makeImage())
+    }
+
+    /// Each later kind adds as a layer that changes the export, opens in its filter's panel, and survives saving, which
+    /// needs version 18.
+    @Test func vignetteLensEffectsAndTonalContrastLayersRenderEditAndSave() async throws {
+        for kind in [AdjustmentKind.vignette, .lensEffects, .tonalContrast] {
+            let session = EditorSession()
+            session.createDocument(width: 80, height: 60)
+            let image = try scene()
+            session.insert(ImportedImage(image: image, thumbnail: image, name: "Scene"))
+            let before = try reader(try await ImageExporter.shared.render(try #require(session.projectSnapshot())).image)
+            session.addAdjustment(kind)
+            await session.beginAdjustmentEditing(try #require(session.adjustmentEditingID))
+            #expect(session.filterEdit?.kind == kind.filterKind, "\(kind) opens its filter's panel")
+            var settings = try #require(session.filterEdit?.settings)
+            settings.vignetteAmount = 80
+            settings.tonalAmount = 100
+            settings.lens.effect = .mist
+            settings.lens.mistStrength = 90
+            session.updateFilter(settings, preview: true)
+            session.finishAdjustmentEditing(commit: true)
+            let layer = try #require(session.document?.layers.last?.adjustment)
+            switch kind {
+            case .vignette: #expect(layer.filterLayer.vignette?.amount == 80)
+            case .tonalContrast: #expect(layer.filterLayer.tonal?.amount == 100)
+            default: #expect(layer.filterLayer.lens?.effect == .mist && layer.filterLayer.lens?.mistStrength == 90)
+            }
+            let snapshot = try #require(session.projectSnapshot())
+            #expect(snapshot.manifest.version == 18)
+            let after = try reader(try await ImageExporter.shared.render(snapshot).image)
+            let changed = (0..<80).contains { x in (0..<60).contains { y in after(x, y) != before(x, y) } }
+            #expect(changed, "\(kind) changes the image")
+
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("FilterLayers18-\(UUID()).comp")
+            defer { try? FileManager.default.removeItem(at: url) }
+            try await ProjectStore.shared.save(snapshot, to: url)
+            let loaded = try await ProjectStore.shared.load(from: url)
+            #expect(loaded.manifest.layers.last?.adjustment == layer, "\(kind) keeps its settings")
+            var older = snapshot.manifest
+            older.version = 17
+            await #expect(throws: (any Error).self) {
+                try await ProjectStore.shared.save(ProjectSnapshot(manifest: older, images: snapshot.images), to: url)
+            }
+        }
+    }
+
+    /// A Vignette or Tonal Contrast layer drawn on the canvas's GPU looks as the export makes it, on the CPU.
+    @Test func vignetteAndTonalContrastMatchOnTheGPU() throws {
+        guard MetalFinishing.shared != nil else { return }
+        let image = try scene()
+        var vignette = LayerAdjustment(kind: .vignette)
+        vignette.filterLayer.vignette = VignetteLayerSettings()
+        vignette.filterLayer.vignette?.amount = 80
+        var tonal = LayerAdjustment(kind: .tonalContrast)
+        tonal.filterLayer.tonal = TonalLayerSettings()
+        tonal.filterLayer.tonal?.amount = 100
+        tonal.filterLayer.tonal?.radius = 6
+        for adjustment in [vignette, tonal] {
+            let cpu = try reader(try adjustment.apply(image))
+            let gpuImage = try #require(GPUAdjustment.apply(adjustment, to: CIImage(cgImage: image), scale: 1, mapping: .identity,
+                                                            document: CGSize(width: 80, height: 60)))
+            let gpu = try reader(try #require(PixelAdjust.ciContext.createCGImage(gpuImage, from: CGRect(x: 0, y: 0, width: 80, height: 60),
+                                                                                  format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)))
+            var worst = 0
+            for x in stride(from: 0, to: 80, by: 3) { for y in stride(from: 0, to: 60, by: 3) {
+                worst = max(worst, zip(cpu(x, y), gpu(x, y)).map { abs($0 - $1) }.max() ?? 0)
+            } }
+            // The export blurs Tonal Contrast's detail at 8 bits, the canvas in floats: a few levels apart at most.
+            #expect(worst <= 5, "\(adjustment.kind): within \(worst) levels")
+        }
+    }
+
+    /// Lens Effects measures itself by the whole document, not the part of it the canvas is drawing.
+    @Test func lensEffectsLayerSizesByTheDocument() throws {
+        var adjustment = LayerAdjustment(kind: .lensEffects)
+        adjustment.filterLayer.lens = LensEffectSettings()
+        adjustment.filterLayer.lens?.effect = .prism
+        adjustment.filterLayer.lens?.prismCopies = 1
+        adjustment.filterLayer.lens?.prismOffset = 10
+        // A light at the right edge of a 200-pixel-wide piece of an 800-pixel document: a copy 10% of 800 = 80 pixels left.
+        let piece = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: CGRect(x: 0, y: 0, width: 200, height: 50))
+        let light = CIImage(color: CIColor(red: 1, green: 1, blue: 1)).cropped(to: CGRect(x: 180, y: 20, width: 10, height: 10))
+        let image = light.composited(over: piece)
+        let result = try #require(GPUAdjustment.apply(adjustment, to: image, scale: 1, mapping: .identity, document: CGSize(width: 800, height: 400)))
+        let pixel = try reader(try #require(PixelAdjust.ciContext.createCGImage(result, from: image.extent, format: .RGBA8,
+                                                                                 colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)))
+        // Rows top-down: y 20–30 up from the bottom of 50 is 20–30 down too.
+        #expect(pixel(105, 25)[1] > 40, "the copy lands 80 pixels left")
+        #expect(pixel(160, 25)[1] < 10, "not 20, as a 200-pixel picture would put it")
+    }
+
+    @Test func theCanvasDrawsTheLaterKindsOnTheGPU() {
+        let image = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        for kind in [AdjustmentKind.lensEffects] + (MetalFinishing.shared == nil ? [] : [.vignette, .tonalContrast]) {
             #expect(GPUAdjustment.apply(LayerAdjustment(kind: kind), to: image, scale: 1, mapping: .identity) != nil, "\(kind)")
         }
     }

@@ -8,10 +8,12 @@ nonisolated enum AdjustmentKind: String, Codable, CaseIterable, Sendable {
     case invert = "Invert"
     case blackWhite = "Black & White", colorBalance = "Color Balance"
     case progressiveBlur = "Progressive Blur", bloomGlow = "Bloom / Glow", rgbSplit = "RGB Split"
+    case vignette = "Vignette", lensEffects = "Lens Effects", tonalContrast = "Tonal Contrast"
     /// The menus' two groups, each in the order of the menu it comes from: the Image menu's color adjustments, then
     /// the Filter menu's filters.
     static let imageAdjustments: [Self] = [.curves, .levels, .hsv, .blackWhite, .colorBalance, .exposure, .gradientMap, .grain, .invert]
-    static let filters: [Self] = [.gaussianBlur, .motionBlur, .progressiveBlur, .addNoise, .bloomGlow, .rgbSplit]
+    static let filters: [Self] = [.gaussianBlur, .motionBlur, .progressiveBlur, .addNoise, .vignette, .bloomGlow, .rgbSplit,
+                                  .lensEffects, .tonalContrast]
     var symbol: String {
         switch self {
         case .curves: return "point.topleft.down.to.point.bottomright.curvepath"
@@ -29,6 +31,9 @@ nonisolated enum AdjustmentKind: String, Codable, CaseIterable, Sendable {
         case .progressiveBlur: return "aqi.medium"
         case .bloomGlow: return "sun.max"
         case .rgbSplit: return "rainbow"
+        case .vignette: return "circle.dashed.inset.filled"
+        case .lensEffects: return "camera.aperture"
+        case .tonalContrast: return "circle.lefthalf.striped.horizontal"
         }
     }
     /// The filter panel that edits this kind; Levels and Hue/Saturation have panels of their own.
@@ -48,6 +53,9 @@ nonisolated enum AdjustmentKind: String, Codable, CaseIterable, Sendable {
         case .progressiveBlur: return .progressiveBlur
         case .bloomGlow: return .bloomGlow
         case .rgbSplit: return .rgbSplit
+        case .vignette: return .vignette
+        case .lensEffects: return .lensEffects
+        case .tonalContrast: return .tonalContrast
         // Hue/Saturation and Levels have panels of their own; Invert has nothing to set.
         case .hsv, .levels, .invert: return nil
         }
@@ -142,6 +150,9 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
         case .motionBlur: return CGFloat(resolvedMotionDistance / 2 + 2)
         case .progressiveBlur, .bloomGlow, .rgbSplit:
             return FilterEdit.blurMargin(kind.filterKind ?? .bloomGlow, filterLayer.applied(to: FilterSettings()))
+        case .tonalContrast: return CGFloat(filterLayer.resolvedTonal.radius * 3 + 2)
+        // A light anywhere can streak or scatter across the whole picture: a change redraws everything.
+        case .lensEffects: return 1_000_000
         default: return 0
         }
     }
@@ -175,7 +186,7 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
     /// Exposure exactly on HDR ones; through its color lookup when its channels mix; otherwise run several times and
     /// read between (`DeepLayer.run`).
     func applySixteenBit(_ image: CGImage, region: CGRect? = nil, scale: CGFloat = 1) throws -> CGImage {
-        if [.gaussianBlur, .motionBlur, .progressiveBlur, .bloomGlow].contains(kind) {
+        if [.gaussianBlur, .motionBlur, .progressiveBlur, .bloomGlow, .lensEffects].contains(kind) {
             return try apply(image, region: region, scale: scale, sixteenBit: true)
         }
         if kind == .exposure, DeepLayer.isHDR(image) { return try DeepLayer.exposure(image, exposure) }
@@ -220,14 +231,14 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
                                                                   y: $0.minY * CGFloat(image.height) / max(1, $0.height)) } ?? .zero)
             job.sixteenBit = sixteenBit && filterKind != .addNoise
             return try PixelFilter.run(job)
-        case .progressiveBlur, .bloomGlow, .rgbSplit:
+        case .progressiveBlur, .bloomGlow, .rgbSplit, .vignette, .lensEffects, .tonalContrast:
             // The positions are the document's: `region` places this image in it.
             let region = region ?? CGRect(x: 0, y: 0, width: image.width, height: image.height)
             let mapping = CGAffineTransform(a: region.width / CGFloat(max(1, image.width)), b: 0, c: 0,
                                             d: region.height / CGFloat(max(1, image.height)), tx: region.minX, ty: region.minY)
             var job = FilterJob(kind: kind.filterKind ?? .bloomGlow, image: image, settings: filterLayer.applied(to: FilterSettings()),
                                 scale: scale, selection: nil, mapping: mapping)
-            job.sixteenBit = sixteenBit && kind != .rgbSplit
+            job.sixteenBit = sixteenBit && kind != .rgbSplit && kind != .vignette && kind != .tonalContrast
             return try PixelFilter.run(job)
         case .invert:
             return try PixelInvert.run(PixelInvert.Job(image: image, isMask: false,
@@ -276,8 +287,9 @@ extension EditorSession {
     }
 }
 
-/// The settings a Progressive Blur, Bloom / Glow or RGB Split adjustment layer keeps: those of its filter (see
-/// `FilterSettings`), positions in the document's pixels.
+/// The settings a filter adjustment layer keeps: those of its filter (see `FilterSettings`), positions in the document's
+/// pixels. Vignette, Tonal Contrast and Lens Effects, which came later (version 18), each keep theirs in an object of
+/// their own, absent from other layers.
 nonisolated struct FilterLayerSettings: Codable, Equatable, Sendable {
     var progressiveFrom: Double = 0
     var progressiveTo: Double = 20
@@ -293,6 +305,11 @@ nonisolated struct FilterLayerSettings: Codable, Equatable, Sendable {
     var rgbSplitRadial = false
     var rgbSplitCenter: CGPoint?
     var rgbSplitReach: Double = 1000
+    var vignette: VignetteLayerSettings?
+    var tonal: TonalLayerSettings?
+    var lens: LensEffectSettings?
+    var resolvedVignette: VignetteLayerSettings { vignette ?? VignetteLayerSettings() }
+    var resolvedTonal: TonalLayerSettings { tonal ?? TonalLayerSettings() }
 
     init() {}
     init(_ settings: FilterSettings) {
@@ -314,12 +331,67 @@ nonisolated struct FilterLayerSettings: Codable, Equatable, Sendable {
         settings.bloomAmount = bloomAmount; settings.bloomRadius = bloomRadius
         settings.rgbSplitDistance = rgbSplitDistance; settings.rgbSplitBlur = rgbSplitBlur; settings.rgbSplitAngle = rgbSplitAngle
         settings.rgbSplitRadial = rgbSplitRadial; settings.rgbSplitCenter = rgbSplitCenter; settings.rgbSplitReach = rgbSplitReach
+        if let vignette { settings = vignette.applied(to: settings) }
+        if let tonal { settings = tonal.applied(to: settings) }
+        if let lens { settings.lens = lens }
         return settings
     }
 
     /// Within the ranges the filters take, every number finite.
     var isValid: Bool {
         let points = [progressiveStart, progressiveEnd, rgbSplitCenter].compactMap { $0 }
-        return self == Self(applied(to: FilterSettings())) && points.allSatisfy { $0.x.isFinite && $0.y.isFinite }
+        var shared = self
+        shared.vignette = nil; shared.tonal = nil; shared.lens = nil
+        return shared == Self(shared.applied(to: FilterSettings())) && points.allSatisfy { $0.x.isFinite && $0.y.isFinite }
+            && vignette.map { $0 == VignetteLayerSettings($0.applied(to: FilterSettings())) } ?? true
+            && tonal.map { $0 == TonalLayerSettings($0.applied(to: FilterSettings())) } ?? true
+            && lens.map { $0 == $0.normalized } ?? true
+    }
+}
+
+/// A Vignette layer's settings, as the filter's (see `FilterSettings`).
+nonisolated struct VignetteLayerSettings: Codable, Equatable, Sendable {
+    var amount: Double = 35
+    var color = AdjustmentColor(red: 0, green: 0, blue: 0)
+    var midpoint: Double = 50
+    var roundness: Double = 100
+    var feather: Double = 60
+    var highlights: Double = 25
+
+    init() {}
+    init(_ settings: FilterSettings) {
+        let settings = settings.normalized
+        amount = settings.vignetteAmount; color = settings.vignetteColor; midpoint = settings.vignetteMidpoint
+        roundness = settings.vignetteRoundness; feather = settings.vignetteFeather; highlights = settings.vignetteHighlights
+    }
+
+    func applied(to settings: FilterSettings) -> FilterSettings {
+        var settings = settings
+        settings.vignetteAmount = amount; settings.vignetteColor = color; settings.vignetteMidpoint = midpoint
+        settings.vignetteRoundness = roundness; settings.vignetteFeather = feather; settings.vignetteHighlights = highlights
+        return settings
+    }
+}
+
+/// A Tonal Contrast layer's settings, as the filter's (see `FilterSettings`).
+nonisolated struct TonalLayerSettings: Codable, Equatable, Sendable {
+    var amount: Double = 50
+    var radius: Double = 16
+    var shadows: Double = 40
+    var midtones: Double = 60
+    var highlights: Double = 30
+
+    init() {}
+    init(_ settings: FilterSettings) {
+        let settings = settings.normalized
+        amount = settings.tonalAmount; radius = settings.tonalRadius; shadows = settings.tonalShadows
+        midtones = settings.tonalMidtones; highlights = settings.tonalHighlights
+    }
+
+    func applied(to settings: FilterSettings) -> FilterSettings {
+        var settings = settings
+        settings.tonalAmount = amount; settings.tonalRadius = radius; settings.tonalShadows = shadows
+        settings.tonalMidtones = midtones; settings.tonalHighlights = highlights
+        return settings
     }
 }

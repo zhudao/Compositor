@@ -104,7 +104,7 @@ struct GIFLayerTests {
         #expect(frames.map { session.gifTimelineTiming.delay(for: $0) } == [0.04, 0.16, 0.08, 0.24])
     }
 
-    @Test func editedFramesTimingAndCopiesSurviveSavingAtVersion17() async throws {
+    @Test func editedFramesTimingAndCopiesSurviveSaving() async throws {
         let (session, id, url) = try await imported()
         defer { try? FileManager.default.removeItem(at: url) }
         await session.selectGIFTimelineFrame(1)
@@ -117,7 +117,7 @@ struct GIFLayerTests {
         let project = FileManager.default.temporaryDirectory.appendingPathComponent("GIF-\(UUID()).comp")
         defer { try? FileManager.default.removeItem(at: project) }
         let snapshot = try #require(session.projectSnapshot())
-        #expect(snapshot.manifest.version == 17)
+        #expect(snapshot.manifest.version == ProjectManifest.current)
         try await ProjectStore.shared.save(snapshot, to: project)
         let loaded = try await ProjectStore.shared.load(from: project)
         let reopened = EditorSession()

@@ -17,11 +17,11 @@ extension UTType {
 
 nonisolated struct ProjectManifest: Codable, Sendable {
     /// The format version new saves write.
-    static let current = 17
-    /// Every version `load` accepts. The package-header check, the manifest check and the error
-    /// message all read this, so they cannot drift apart when `current` is bumped.
-    static let upstreamVersions = 1...14
-    static let supported = Set(upstreamVersions).union([27, current])
+    static let current = 18
+    /// Every version `load` accepts: each one a release has written (1 through `current`), and 27 from the
+    /// GIF branch's own builds. Leaving out 15 and 16 once locked out projects saved by 1.5.4 and 1.5.5.
+    /// The package-header and manifest checks both read this, so they can't drift apart when `current` is bumped.
+    static let supported = Set(1...current).union([27])
 
     var format = "com.compositor.project"
     var version = ProjectManifest.current
@@ -145,7 +145,7 @@ nonisolated enum ProjectError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalid: "This is not a valid Compositor project, or its metadata is damaged."
-        case .version(let version): "This project uses format version \(version). This app supports versions \(ProjectManifest.upstreamVersions.lowerBound)–\(ProjectManifest.upstreamVersions.upperBound), 27, and \(ProjectManifest.current)."
+        case .version(let version): "This project uses format version \(version). This app supports versions 1–\(ProjectManifest.current) and 27."
         case .missingImage: "An image inside the project is missing or damaged. The current document has not been replaced."
         case .tooLarge: "This project exceeds the supported canvas, layer, file-size, or \(DocumentLimits.documentBudgetMegapixels)-megapixel document limit."
         case .encode: "An image could not be saved. The previous project has not been replaced."
@@ -394,6 +394,12 @@ actor ProjectStore {
                 // Progressive Blur, Bloom / Glow and RGB Split layers arrived in version 16.
                 if [.progressiveBlur, .bloomGlow, .rgbSplit].contains(adjustment.kind) || adjustment.filterLayerSettings != nil {
                     guard manifest.version >= 16 else { throw ProjectError.invalid }
+                }
+                // Vignette, Lens Effects and Tonal Contrast layers arrived in version 18.
+                let filterLayer = adjustment.filterLayerSettings
+                if [.vignette, .lensEffects, .tonalContrast].contains(adjustment.kind)
+                    || filterLayer?.vignette != nil || filterLayer?.tonal != nil || filterLayer?.lens != nil {
+                    guard manifest.version >= 18 else { throw ProjectError.invalid }
                 }
             }
             // Layer masks arrived in version 4, folder masks in version 6.
