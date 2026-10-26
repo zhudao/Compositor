@@ -7,11 +7,17 @@ import Metal
 /// continuous rainbow as light through a prism does, rather than three offset copies. Blur smears each of those along
 /// the same line, into streaks. Linear splits along one direction everywhere; Radial splits outwards from a center,
 /// more the farther from it, leaving the center sharp.
+///
+/// With blur it runs in two passes: the streaks first, into a copy padded by the split's reach, then the spectrum read
+/// from that — a sample per streak position plus one per spectrum position, rather than one for every pair of them,
+/// which is several times faster and looks the same, the fine grain falling slightly differently.
 nonisolated final class MetalDispersion: @unchecked Sendable {
     static let shared: MetalDispersion? = try? MetalDispersion()
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLComputePipelineState
+    private let smear: MTLComputePipelineState
+    private let spectrum: MTLComputePipelineState
 
     struct Parameters {
         /// In the image's pixels, rows top-down.
@@ -38,12 +44,26 @@ nonisolated final class MetalDispersion: @unchecked Sendable {
     }
 
     private init() throws {
-        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
-              let function = try device.makeLibrary(source: Self.source, options: nil).makeFunction(name: "disperse")
-        else { throw ExportError.render }
+        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { throw ExportError.render }
+        let library = try device.makeLibrary(source: Self.source, options: nil)
+        guard let function = library.makeFunction(name: "disperse"), let smear = library.makeFunction(name: "smear"),
+              let spectrum = library.makeFunction(name: "spectrum") else { throw ExportError.render }
         self.device = device
         self.queue = queue
         pipeline = try device.makeComputePipelineState(function: function)
+        self.smear = try device.makeComputePipelineState(function: smear)
+        self.spectrum = try device.makeComputePipelineState(function: spectrum)
+    }
+
+    /// How far the spectrum reaches from any point of `rect` (in the parameters' coordinates): the split's distance,
+    /// times how far Radial's grows past `reach` at the farthest corner.
+    static func spread(_ parameters: Parameters, over rect: CGRect) -> CGFloat {
+        guard parameters.radial != 0 else { return CGFloat(parameters.distance) }
+        let center = CGPoint(x: CGFloat(parameters.center.x), y: CGFloat(parameters.center.y))
+        let farthest = [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
+                        CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY)]
+            .map { hypot($0.x - center.x, $0.y - center.y) }.max() ?? 0
+        return CGFloat(parameters.distance) * farthest / CGFloat(max(parameters.reach, 1))
     }
 
     /// Disperses `pixels` (8-bit premultiplied RGBA, rows top-down) in place.
@@ -58,7 +78,25 @@ nonisolated final class MetalDispersion: @unchecked Sendable {
         else { throw ExportError.render }
         let region = MTLRegionMake2D(0, 0, width, height)
         source.replace(region: region, mipmapLevel: 0, withBytes: data, bytesPerRow: pixels.bytesPerRow)
-        encode(source, into: destination, parameters, with: encoder)
+        if parameters.smear > 1 {
+            // The streaks into a half-float copy padded by the spectrum's reach, then the spectrum from it.
+            let pad = Self.spread(parameters, over: CGRect(x: 0, y: 0, width: width, height: height)).rounded(.up) + 2
+            let padded = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: width + Int(pad) * 2,
+                                                                  height: height + Int(pad) * 2, mipmapped: false)
+            padded.usage = [.shaderRead, .shaderWrite]
+            padded.storageMode = .private
+            guard let streaks = device.makeTexture(descriptor: padded) else { encoder.endEncoding(); throw ExportError.render }
+            var first = parameters
+            first.outputOrigin = SIMD2(-Float(pad), -Float(pad))
+            encode(source, into: streaks, first, pipeline: smear, with: encoder)
+            guard let second = command.makeComputeCommandEncoder() else { throw ExportError.render }
+            var last = parameters
+            last.inputOrigin = SIMD2(-Float(pad), -Float(pad))
+            last.sides = 15
+            encode(streaks, into: destination, last, pipeline: spectrum, with: second)
+        } else {
+            encode(source, into: destination, parameters, with: encoder)
+        }
         command.commit()
         command.waitUntilCompleted()
         guard command.status == .completed else { throw command.error ?? ExportError.render }
@@ -66,7 +104,14 @@ nonisolated final class MetalDispersion: @unchecked Sendable {
     }
 
     /// Runs the dispersion from `source` into `destination` in `encoder`'s command buffer, which the caller commits.
-    func encode(_ source: MTLTexture, into destination: MTLTexture, _ parameters: Parameters, with encoder: MTLComputeCommandEncoder) {
+    func encode(_ source: MTLTexture, into destination: MTLTexture, _ parameters: Parameters, pass: String? = nil,
+                with encoder: MTLComputeCommandEncoder) {
+        encode(source, into: destination, parameters,
+               pipeline: pass == "smear" ? smear : pass == "spectrum" ? spectrum : pipeline, with: encoder)
+    }
+
+    private func encode(_ source: MTLTexture, into destination: MTLTexture, _ parameters: Parameters,
+                        pipeline: MTLComputePipelineState, with encoder: MTLComputeCommandEncoder) {
         var parameters = parameters
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(source, index: 0)
@@ -82,8 +127,22 @@ nonisolated final class MetalDispersion: @unchecked Sendable {
     static func apply(to image: CIImage, _ parameters: Parameters, margin: CGFloat) -> CIImage? {
         guard shared != nil, !image.extent.isInfinite, !image.extent.isEmpty else { return nil }
         let data = withUnsafeBytes(of: parameters) { Data($0) }
-        return try? DispersionKernel.apply(withExtent: image.extent.insetBy(dx: -margin, dy: -margin), inputs: [image],
-                                           arguments: ["parameters": data, "margin": margin])
+        let extent = image.extent.insetBy(dx: -margin, dy: -margin)
+        guard parameters.smear > 1 else {
+            return try? DispersionKernel.apply(withExtent: extent, inputs: [image], arguments: ["parameters": data, "margin": margin])
+        }
+        // The streaks over the result's extent padded by the spectrum's reach, then the spectrum read from them.
+        let pad = spread(parameters, over: extent).rounded(.up) + 2
+        var last = parameters
+        last.sides = 15
+        // Each streak runs half its length either way, longer past `reach` for Radial.
+        var streak = parameters
+        streak.distance = parameters.blur
+        let smearMargin = spread(streak, over: extent.insetBy(dx: -pad, dy: -pad)) * 0.5 + 2
+        guard let streaks = try? DispersionKernel.apply(withExtent: extent.insetBy(dx: -pad, dy: -pad), inputs: [image], arguments: [
+            "parameters": data, "margin": smearMargin, "pass": "smear"]) else { return nil }
+        return try? DispersionKernel.apply(withExtent: extent, inputs: [streaks], arguments: [
+            "parameters": withUnsafeBytes(of: last) { Data($0) }, "margin": pad, "pass": "spectrum"])
     }
 
     // Compiled at launch by the system's Metal compiler, as the brush's is.
@@ -152,6 +211,54 @@ kernel void disperse(texture2d<float, access::sample> image [[texture(0)]],
     float a = max(alpha.r, max(alpha.g, alpha.b));
     result.write(float4(min(color, float3(a)), a), pixel);
 }
+
+// Two passes, with blur. The first: the image smeared along the split at each point, as `disperse` smears every
+// spectrum sample, into a copy reaching past the result by the spectrum's spread.
+kernel void smear(texture2d<float, access::sample> image [[texture(0)]],
+                  texture2d<float, access::write> result [[texture(1)]],
+                  constant Parameters &p [[buffer(0)]],
+                  uint2 pixel [[thread_position_in_grid]]) {
+    float2 size = float2(image.get_width(), image.get_height());
+    if (pixel.x >= result.get_width() || pixel.y >= result.get_height()) return;
+    float2 at = p.outputOrigin + float2(float(pixel.x) + 0.5, p.rowSign * (float(pixel.y) + 0.5));
+    float2 axis = p.radial ? (at - p.center) / max(p.reach, 1.0) : p.direction;
+    float2 streak = axis * p.blur;
+    uint m = max(p.smear, 1u);
+    float jitter = fract(sin(dot(float2(pixel), float2(12.9898, 78.233))) * 43758.5453);
+    float4 sum = 0;
+    for (uint j = 0; j < m; j++) {
+        float u = (float(j) + jitter) / float(m) - 0.5;
+        sum += tap(image, at - streak * u, size, p);
+    }
+    result.write(sum / float(m), pixel);
+}
+
+// The second: the spectrum, each sample read from the smeared copy.
+kernel void spectrum(texture2d<float, access::sample> image [[texture(0)]],
+                     texture2d<float, access::write> result [[texture(1)]],
+                     constant Parameters &p [[buffer(0)]],
+                     uint2 pixel [[thread_position_in_grid]]) {
+    float2 size = float2(image.get_width(), image.get_height());
+    if (pixel.x >= result.get_width() || pixel.y >= result.get_height()) return;
+    float2 at = p.outputOrigin + float2(float(pixel.x) + 0.5, p.rowSign * (float(pixel.y) + 0.5));
+    float2 axis = p.radial ? (at - p.center) / max(p.reach, 1.0) : p.direction;
+    float2 spread = axis * p.distance;
+    uint n = max(p.spectral, 1u);
+    float jitter = fract(sin(dot(float2(pixel), float2(12.9898, 78.233))) * 43758.5453);
+    float3 color = 0, alpha = 0, total = 0;
+    for (uint i = 0; i < n; i++) {
+        float t = n == 1 ? 0.0 : (float(i) + jitter) / float(n) * 2.0 - 1.0;
+        float3 weight = float3(smoothstep(-0.3, 1.0, t), 1.0 - smoothstep(0.0, 1.0, abs(t)) + 0.05, smoothstep(-0.3, 1.0, -t));
+        float4 c = tap(image, at - spread * t, size, p);
+        color += weight * c.rgb;
+        alpha += weight * c.a;
+        total += weight;
+    }
+    color /= total;
+    alpha /= total;
+    float a = max(alpha.r, max(alpha.g, alpha.b));
+    result.write(float4(min(color, float3(a)), a), pixel);
+}
 """
 }
 
@@ -180,6 +287,6 @@ final class DispersionKernel: CIImageProcessorKernel {
         parameters.outputOrigin = origin(output.region)
         parameters.inputOrigin = origin(input.region)
         parameters.rowSign = rowsTopDown ? -1 : 1
-        gpu.encode(source, into: destination, parameters, with: encoder)
+        gpu.encode(source, into: destination, parameters, pass: arguments?["pass"] as? String, with: encoder)
     }
 }

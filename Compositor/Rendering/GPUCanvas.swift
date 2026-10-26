@@ -87,6 +87,24 @@ import QuartzCore
     /// `image` as a texture, `level` halvings smaller (sharp reductions for zooming out, as `DownsampleCache` makes on
     /// the CPU). A mask comes back with its values in the red channel. A `transient` image — one that's replaced every
     /// frame, like a Smudge stroke's — is kept only for the frame it's drawn in, and reduced as it's drawn.
+    /// `image` worked out now and kept in a texture, in the working space at its precision, so drawing it later costs a
+    /// read rather than everything it was made from. Nil when it's unbounded or too big to keep.
+    func keep(_ image: CIImage) -> CIImage? {
+        let extent = image.extent
+        guard !extent.isInfinite, !extent.isEmpty else { return nil }
+        let bounds = extent.integral
+        guard bounds.width <= 16384, bounds.height <= 16384, bounds.width * bounds.height <= 16_000_000 else { return nil }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: Int(bounds.width),
+                                                                  height: Int(bounds.height), mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        descriptor.storageMode = .private
+        guard let texture = device.makeTexture(descriptor: descriptor), let command = queue.makeCommandBuffer() else { return nil }
+        context.render(image, to: texture, commandBuffer: command, bounds: bounds, colorSpace: DeepLayer.hdrSpace)
+        command.commit()
+        guard let read = CIImage(mtlTexture: texture, options: [.colorSpace: DeepLayer.hdrSpace]) else { return nil }
+        return read.transformed(by: CGAffineTransform(translationX: bounds.minX, y: bounds.minY)).cropped(to: extent)
+    }
+
     func image(_ image: CGImage, level: Int = 0, mask: Bool = false, transient: Bool = false) -> CIImage? {
         texture(image, level: level, mask: mask, transient: transient, drawing: true)
     }
@@ -614,7 +632,17 @@ nonisolated enum GPUAdjustment {
             return MetalFinishing.tonalContrast(image, radius: tonal.radius * scale, tonal)
         case .lensEffects:
             let side = document.map { max($0.width, $0.height) * scale } ?? max(image.extent.width, image.extent.height)
-            return try? (adjustment.filterLayer.lens ?? LensEffectSettings()).apply(to: image, side: side)
+            // The frame's y points down, the filter's up: angles counterclockwise there turn the other way here.
+            var lens = adjustment.filterLayer.lens ?? LensEffectSettings()
+            lens.starAngle = -lens.starAngle
+            lens.prismAngle = -lens.prismAngle
+            // Only what's in the document, as the export sees it: a layer reaching past the canvas would otherwise add
+            // lights the export never has.
+            let page = document.map { CGRect(origin: .zero, size: $0).applying(mapping) }
+            // Sampled smoothly, as the export's pixels are: the canvas copies a layer pixel for pixel with nearest
+            // sampling, and the spikes' rotations would carry that on, keeping hard bright pixels the export smooths.
+            let smooth = image.samplingLinear()
+            return try? lens.apply(to: page.map { smooth.cropped(to: $0) } ?? smooth, side: side)
         case .rgbSplit:
             let settings = adjustment.filterLayer
             let distance = settings.rgbSplitDistance * scale, blur = settings.rgbSplitBlur * scale

@@ -266,7 +266,11 @@ import Testing
         case .vignette, .lensEffects, .tonalContrast:
             // Their settings reopen in the filter's panel as they were saved.
             let reopened = try #require(session.filterEdit).settings
-            #expect(saved.filterLayer.applied(to: FilterSettings()).normalized == reopened.normalized)
+            switch kind {
+            case .vignette: #expect(VignetteLayerSettings(reopened) == saved.filterLayer.vignette)
+            case .tonalContrast: #expect(TonalLayerSettings(reopened) == saved.filterLayer.tonal)
+            default: #expect(reopened.lens.normalized == saved.filterLayer.lens)
+            }
             session.updateFilter(FilterSettings(), preview: true)
             session.cancelFilter()
         case .hsv:

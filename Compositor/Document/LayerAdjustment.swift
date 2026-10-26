@@ -185,17 +185,19 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
     /// `apply` on 16-bit or HDR pixels (`DeepLayer`): the blurs once in Core Image, which keeps them as they are;
     /// Exposure exactly on HDR ones; through its color lookup when its channels mix; otherwise run several times and
     /// read between (`DeepLayer.run`).
-    func applySixteenBit(_ image: CGImage, region: CGRect? = nil, scale: CGFloat = 1) throws -> CGImage {
+    func applySixteenBit(_ image: CGImage, region: CGRect? = nil, scale: CGFloat = 1, document: CGSize? = nil) throws -> CGImage {
         if [.gaussianBlur, .motionBlur, .progressiveBlur, .bloomGlow, .lensEffects].contains(kind) {
-            return try apply(image, region: region, scale: scale, sixteenBit: true)
+            return try apply(image, region: region, scale: scale, sixteenBit: true, document: document)
         }
         if kind == .exposure, DeepLayer.isHDR(image) { return try DeepLayer.exposure(image, exposure) }
         if let lookup = sixteenBitLookup { return try DeepLayer.lookup(image, cube: lookup.cube, dimension: lookup.dimension) }
-        return try DeepLayer.run(image) { try apply($0, region: region, scale: scale) }
+        return try DeepLayer.run(image) { try apply($0, region: region, scale: scale, document: document) }
     }
 
-    /// `sixteenBit`: the blurs render at the image's own depth (`FilterJob.sixteenBit`).
-    func apply(_ image: CGImage, region: CGRect? = nil, scale: CGFloat = 1, sixteenBit: Bool = false) throws -> CGImage {
+    /// `sixteenBit`: the blurs render at the image's own depth (`FilterJob.sixteenBit`). `document`: the document's size,
+    /// which Lens Effects measures itself by when `image` is only part of it.
+    func apply(_ image: CGImage, region: CGRect? = nil, scale: CGFloat = 1, sixteenBit: Bool = false,
+               document: CGSize? = nil) throws -> CGImage {
         switch kind {
         case .hsv:
             return try HueSaturationFilter.run(HueSaturationJob(image: image,
@@ -239,6 +241,8 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
             var job = FilterJob(kind: kind.filterKind ?? .bloomGlow, image: image, settings: filterLayer.applied(to: FilterSettings()),
                                 scale: scale, selection: nil, mapping: mapping)
             job.sixteenBit = sixteenBit && kind != .rgbSplit && kind != .vignette && kind != .tonalContrast
+            // The document's longer side in this image's pixels.
+            job.lensSide = document.map { max($0.width, $0.height) * CGFloat(image.width) / max(1, region.width) }
             return try PixelFilter.run(job)
         case .invert:
             return try PixelInvert.run(PixelInvert.Job(image: image, isMask: false,

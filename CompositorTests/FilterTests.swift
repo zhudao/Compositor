@@ -249,7 +249,8 @@ struct FilterTests {
         let upright = try split { $0.rgbSplitDistance = 8; $0.rgbSplitAngle = 90 }
         #expect(total(upright, 0, 19...26, vertical: true) > total(upright, 2, 19...26, vertical: true) * 2, "red up on screen")
         let streaked = try split { $0.rgbSplitDistance = 4; $0.rgbSplitBlur = 16 }
-        #expect(total(streaked, 3, 44...48) > 0 && total(flat, 3, 44...48) == 0, "blur stretches it further")
+        // Past where the split alone reaches (8 pixels from the square's edge, at 40.5), the blur's streak carries on.
+        #expect(total(streaked, 3, 41...44) > 0 && total(flat, 3, 41...44) == 0, "blur stretches it further")
         let radial = try split { $0.rgbSplitDistance = 8; $0.rgbSplitRadial = true; $0.rgbSplitCenter = CGPoint(x: 30.5, y: 30.5)
                                  $0.rgbSplitReach = 30 }
         #expect(radial(30, 30) == [255, 255, 255, 255], "the center stays sharp")

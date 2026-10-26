@@ -3,16 +3,16 @@
   <channel>
     <title>Compositor</title>
     <item>
-      <title>Version 1.5.8</title>
-      <pubDate>Sat, 24 Oct 2026 04:48:14 +0000</pubDate>
-      <sparkle:version>54</sparkle:version>
-      <sparkle:shortVersionString>1.5.8</sparkle:shortVersionString>
+      <title>Version 1.5.9</title>
+      <pubDate>Sun, 25 Oct 2026 20:59:05 +0000</pubDate>
+      <sparkle:version>55</sparkle:version>
+      <sparkle:shortVersionString>1.5.9</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.8</link>
-      <changes><![CDATA[Projects saved by 1.5.4 and 1.5.5 open again.
-Filter › Lens Effects: Prism copies stay crisp and echo into the shadows, one way or both, with Blur in place of Reach.
-Lens Effects' Threshold goes to 100%, down to just the brightest one or two lights.]]></changes>
-      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.8/Compositor.dmg" sparkle:edSignature="1ooGzsFahg2XNc19yBDci4ICIRb5qTFq6w2Jy5P5O2Tql1oy5Tc6hdlCJD2/+zIefkiq4uzzrLT7li916iAoDQ==" length="8539058" type="application/octet-stream"/>
+      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.9</link>
+      <changes><![CDATA[Vignette, Lens Effects and Tonal Contrast as adjustment layers, and the Filter menu now lists the filters that can be adjustment layers first.
+Adjustment layers are much faster: their results are kept while nothing under them changes, and RGB Split, Bokeh and Starburst are several times quicker.
+Lens Effects layers look exactly as the Filter menu and Copy Merged make them.]]></changes>
+      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.9/Compositor.dmg" sparkle:edSignature="B1MrXjoAvvkU4oZ1mwAGSydSDmfS7+jfRydI1VR5AZQfxwQy9drVKYbftpPq+naMPRlfwvLpA2e013mcOtYUBQ==" length="8574954" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>

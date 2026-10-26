@@ -200,6 +200,9 @@ nonisolated struct FilterJob: @unchecked Sendable {
     let mapping: CGAffineTransform
     /// Add Noise's random pattern: the same seed gives the same grain.
     var seed: UInt32 = 0
+    /// Lens Effects' measure, in this image's pixels: the whole document's longer side, when the image is only part of
+    /// it. Nil: the image's own.
+    var lensSide: CGFloat?
     /// Vignette on an empty layer: the canvas, in the document, which it frames and fills. Otherwise the vignette
     /// frames the layer's own pixels and recolors only those.
     var canvas: CGRect? = nil
@@ -346,7 +349,9 @@ nonisolated enum PixelFilter {
         case .progressiveBlur:
             image = try render(progressivelyBlurred(edges, job: job, settings: settings, extent: extent).cropped(to: extent), job: job)
         case .rgbSplit: image = try rgbSplit(job, settings: settings)
-        case .lensEffects: image = try render(settings.lens.apply(to: job.image), job: job)
+        case .lensEffects:
+            let side = job.lensSide ?? CGFloat(max(job.image.width, job.image.height))
+            image = try render(settings.lens.apply(to: CIImage(cgImage: job.image), side: side), job: job)
         case .motionBlur:
             // Core Image's y axis points up, so its counterclockwise angle matches Photoshop's.
             let streaked = extending(edges, past: job.canvasSides, of: extent).applyingFilter("CIMotionBlur", parameters: [

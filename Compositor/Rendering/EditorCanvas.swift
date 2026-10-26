@@ -22,6 +22,18 @@ final class CanvasView: NSView {
     var inlineTextEditor: InlineTextEditor?
     /// The text being typed, rendered as the layer will hold it, remade only when its style changes.
     private var draftTextCache: (style: LayerTextStyle, image: CGImage)?
+    /// Each adjustment layer's last result on the GPU canvas, with what it was made from: reused while nothing under it
+    /// or about it has changed — painting above it, a redraw that changes nothing — rather than computed again.
+    private var adjustmentCache: [UUID: (key: [String], image: CIImage)] = [:]
+    /// Off, each adjustment is computed every frame, as before the cache: for comparing the two.
+    var cachesAdjustments = true
+    /// A Lens Effects layer's picture made as Copy Merged and the export make it — everything up to and including the
+    /// layer, at the document's own pixels, by the same code — with what it was made from. Shown in place of the
+    /// canvas's own working while that still matches, so what's on screen is what copying it gives.
+    private var lensExact: [UUID: (key: [String], image: CGImage)] = [:]
+    /// What each Lens Effects layer was made from on the last frame, and the one waiting to be made exactly.
+    private var lensLatest: [UUID: [String]] = [:]
+    private var lensWaiting: [UUID: [String]] = [:]
     /// The effects rendered for the text being edited, and what they were rendered from.
     private var draftEffects: (image: CGImage, effects: LayerEffects, transform: LayerTransform, rendered: CGImage, inset: CGFloat)?
     /// Which layer and text `draftEffects` were made for, so they can stand in once the edit is committed.
@@ -988,7 +1000,10 @@ final class CanvasView: NSView {
             let visible = document.effectiveVisibleIDs
             let padding = document.layers.filter { visible.contains($0.id) }
                 .compactMap(\.adjustment).map(\.samplingMargin).max() ?? 0
-            AdjustmentSurface.draw(in: context, padding: padding * scale) {
+            // The document where it's drawn: no adjustment needs to read past it.
+            let corner = center(.zero), far = center(CGPoint(x: document.size.width, y: document.size.height))
+            let page = CGRect(x: min(corner.x, far.x), y: min(corner.y, far.y), width: abs(far.x - corner.x), height: abs(far.y - corner.y))
+            AdjustmentSurface.draw(in: context, padding: padding * scale, within: page) {
                 self.drawLayers(document, scale: scale, center: center, in: $0, onSurface: true)
             }
             return
@@ -1181,6 +1196,7 @@ final class CanvasView: NSView {
         live.adjustmentOpacity = { byID[$0]?.effectiveOpacity(in: byID) ?? 1 }
         // Adjustments run on the surface's pixels, one per screen pixel (see AdjustmentSurface).
         live.adjustmentScale = scale * LayerRenderer.deviceScale(of: context)
+        live.adjustmentDocument = document.size
         live.resolution = LayerRenderer.deviceScale(of: context)
         let corner = center(.zero)
         live.adjustmentRegion = { rect in
@@ -2730,6 +2746,32 @@ extension CanvasView {
         return true
     }
 
+    /// Makes `id`'s picture as Copy Merged would — the document with everything above the layer hidden, composited by the
+    /// export's code — once the canvas has settled on `key`, then redraws to show it.
+    private func makeLensExact(_ id: UUID, key: [String]) {
+        guard lensWaiting[id] != key else { return }
+        lensWaiting[id] = key
+        // On the run loop, so it waits while a drag or a slider keeps the canvas busy.
+        Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in MainActor.assumeIsolated {
+            guard let self, self.lensWaiting[id] == key else { return }
+            self.lensWaiting[id] = nil
+            // Only if the canvas still shows what this was asked for.
+            guard self.lensLatest[id] == key, var document = self.session.document,
+                  document.layers.contains(where: { $0.id == id }) else { return }
+            let underneath = Set(document.renderLayers.map(\.id).prefix { $0 != id }).union([id])
+            for index in document.layers.indices where document.layers[index].isGroup != true && !underneath.contains(document.layers[index].id) {
+                document.layers[index].isVisible = false
+            }
+            let width = Int(document.size.width.rounded()), height = Int(document.size.height.rounded())
+            guard let context = try? BrushRaster.context(width: width, height: height, mask: false) else { return }
+            self.session.drawLiveComposite(document, in: context)
+            guard let image = context.makeImage() else { return }
+            self.lensExact = self.lensExact.filter { self.lensLatest[$0.key] != nil }
+            self.lensExact[id] = (key, image)
+            self.needsDisplay = true
+        } }
+    }
+
     /// The frame the GPU would draw, `size` screen pixels across, for comparing with the Core Graphics canvas.
     func gpuFrame(size: CGSize) -> CIImage? {
         guard let renderer = GPUCanvasRenderer.shared, let document = session.document else { return nil }
@@ -2828,6 +2870,11 @@ extension CanvasView {
             stacks[base] = children
             stacked.formUnion(children)
         }
+        // What the picture so far was made from, a line per part: an adjustment's cached result is good while these
+        // match. A part drawn from something in progress — a stroke, a drag, a preview, a draft — gets a line of its
+        // own each frame, which matches nothing.
+        var prints: [String] = []
+        func transient() -> String { "transient \(UUID())" }
         // Folder masks, placed once each.
         var folderMasks: [UUID: CIImage?] = [:]
         func folderMask(_ id: UUID) -> CIImage? {
@@ -2838,6 +2885,10 @@ extension CanvasView {
                 return placement.place(mask.asset.image, transform: session.displayedTransform(for: folder), mask: true)
             }
             folderMasks[id] = placed
+            if let folder = byID[id], let mask = folder.mask, mask.isEnabled {
+                prints.append(liveMaskEdit(for: id) != nil ? transient()
+                    : "folder \(id) \(ObjectIdentifier(mask.asset.image)) \(session.displayedTransform(for: folder))")
+            }
             return placed
         }
         func clippedByFolders(_ id: UUID, _ image: CIImage) -> CIImage {
@@ -3014,7 +3065,14 @@ extension CanvasView {
             return shaded.transformed(by: toGrid)
         }
         // One layer's pixels, placed, through its own mask and at its opacity — what `drawOwn` draws.
+        var ownPrint: String?
         func own(_ layer: ImageLayer) -> CIImage? {
+            ownPrint = nil
+            let image = ownImage(layer)
+            prints.append(ownPrint ?? transient())
+            return image
+        }
+        func ownImage(_ layer: ImageLayer) -> CIImage? {
             let opacity = layer.effectiveOpacity(in: byID)
             // Text being edited, as it will be committed.
             if layer.id == session.textDraft?.layerID {
@@ -3066,7 +3124,10 @@ extension CanvasView {
             let displayedLayer = session.displayedLayer(for: layer)
             let displayedAsset = displayedLayer.asset
             let displayedMask = displayedLayer.mask
-            guard displayedAsset != nil || session.filterEdit?.previewImage(for: layer.id) != nil else { return nil }
+            guard displayedAsset != nil || session.filterEdit?.previewImage(for: layer.id) != nil else {
+                ownPrint = "none \(layer.id)"
+                return nil
+            }
             // A distortion in progress, with effects: them, warped into the shape (as the Core Graphics canvas does).
             if layer.effects?.visible.isEmpty == false, let edit = session.transformEdit, !edit.mask, edit.corners != nil,
                let effects = session.effectsPreviews.preview(for: displayedLayer,
@@ -3118,6 +3179,7 @@ extension CanvasView {
                     }) {
                 let grown = effects.placement ?? LayerEffectsRenderer.placed(transform, image: effects.image, inset: effects.inset)
                 guard let image = placement.place(effects.image, transform: grown) else { unsupported = true; return nil }
+                ownPrint = "effects \(layer.id) \(ObjectIdentifier(effects.image)) \(grown) \(opacity)"
                 return GPUBlend.faded(image, opacity)
             }
             let placed: CIImage?
@@ -3141,11 +3203,30 @@ extension CanvasView {
                 guard let placedMask = placement.place(mask, transform: transform, mask: true) else { unsupported = true; return nil }
                 image = GPUBlend.masked(image, by: placedMask)
             }
+            // Drawn from the layer's own pixels and mask as they stand, with nothing in progress over them.
+            let previewing = session.shapeTransformPreview(for: layer, transform: transform) != nil
+                || session.hueSaturation?.previewImage(for: layer.id) != nil || session.levels?.previewImage(for: layer.id) != nil
+                || session.filterEdit?.previewImage(for: layer.id) != nil || session.maskDistortPreview(for: layer) != nil
+            if !previewing, let asset = displayedAsset {
+                let maskPrint = displayedMask.map {
+                    "\(ObjectIdentifier($0.asset.image)) \($0.asset.raster.map { ObjectIdentifier($0) }.debugDescription) \($0.isEnabled) "
+                        + "\(session.displayedMaskPlacement(for: layer).debugDescription) \(session.transformEdit != nil)"
+                } ?? "unmasked"
+                ownPrint = "own \(layer.id) \(ObjectIdentifier(asset.image)) \(asset.raster.map { ObjectIdentifier($0) }.debugDescription) "
+                    + "\(transform) \(maskPrint) \(opacity)"
+            }
             return GPUBlend.faded(image, opacity)
         }
         // An adjustment re-colors what's under it, through its own mask and its folders' masks, at its opacity.
         func adjusted(_ below: CIImage, by layer: ImageLayer, adjustment: LayerAdjustment, folders: Bool) -> CIImage? {
-            guard var changed = GPUAdjustment.apply(adjustment, to: below, scale: placement.scale, mapping: placement.mapping,
+            // Lens Effects works on what's below as pixels, as the export does: the canvas places layers with nearest sampling,
+            // which its spikes' rotations would carry through, keeping hard bright pixels the export smooths.
+            var source = below
+            if adjustment.kind == .lensEffects {
+                let page = CGRect(origin: .zero, size: document.size).applying(placement.mapping)
+                source = placement.renderer.keep(below.cropped(to: page)) ?? below
+            }
+            guard var changed = GPUAdjustment.apply(adjustment, to: source, scale: placement.scale, mapping: placement.mapping,
                                                     hdr: hasHDR, document: session.document?.size)
             else { return nil }
             // In a blend mode, the adjusted colors blend with the ones under them at full coverage, and the original
@@ -3207,21 +3288,61 @@ extension CanvasView {
         func drafts(after id: UUID, over image: CIImage) -> CIImage {
             guard id == session.activeLayerID else { return image }
             var result = image
-            if let shape = shapeDraftImage(placement: placement) { result = shape.composited(over: result) }
+            if let shape = shapeDraftImage(placement: placement) {
+                result = shape.composited(over: result)
+                prints.append(transient())
+            }
             if session.textDraft?.layerID == nil, let text = draftText, let placed = placement.place(text.image, transform: text.transform) {
                 result = placed.composited(over: result)
                 drewNewText = true
+                prints.append(transient())
             }
             return result
         }
+        // An adjustment layer as it's drawn: its settings, its own mask, opacity and blend mode.
+        func adjustmentPrint(_ layer: ImageLayer, _ adjustment: LayerAdjustment) -> String {
+            if liveMaskEdit(for: layer.id) != nil { return transient() }
+            let mask = layer.mask.map { "\(ObjectIdentifier($0.asset.image)) \($0.isEnabled)" } ?? "unmasked"
+            return "adjustment \(layer.id) \(adjustment) \(mask) \(layer.transform) \(layer.effectiveOpacity(in: byID)) "
+                + "\(session.displayedBlendMode(for: layer))"
+        }
+        prints.append("frame \(placement.mapping) \(placement.scale) \(hasHDR) \(document.size)")
+        var cached = Set<UUID>()
+        defer { if cachesAdjustments { adjustmentCache = adjustmentCache.filter { cached.contains($0.key) } } }
         var result = CIImage.empty()
         for id in ids where !stacked.contains(id) {
             guard let layer = byID[id] else { continue }
             let mode = session.displayedBlendMode(for: layer)
+            prints.append("layer \(id) \(mode)")
             if let adjustment = layer.adjustment {
                 guard layer.maskSourceID == nil else { continue }
+                // Its folders' masks are part of what it's drawn through.
+                var folder = layer.parentID, depth = 0
+                while let current = folder, depth < 64 { _ = folderMask(current); folder = byID[current]?.parentID; depth += 1 }
+                prints.append(adjustmentPrint(layer, adjustment))
+                let steady = !prints.contains { $0.hasPrefix("transient") }
+                if adjustment.kind == .lensEffects {
+                    lensLatest[id] = prints
+                    if steady, let exact = lensExact[id], exact.key == prints,
+                       let placed = placement.place(exact.image, transform: LayerTransform(origin: .zero, size: document.size)) {
+                        result = placed
+                        continue
+                    }
+                    if steady { makeLensExact(id, key: prints) }
+                }
+                if cachesAdjustments, steady, let entry = adjustmentCache[id], entry.key == prints {
+                    result = entry.image
+                    cached.insert(id)
+                    continue
+                }
                 guard let changed = adjusted(result, by: layer, adjustment: adjustment, folders: true) else { return nil }
-                result = changed
+                if cachesAdjustments, steady, let kept = placement.renderer.keep(changed) {
+                    adjustmentCache[id] = (prints, kept)
+                    cached.insert(id)
+                    result = kept
+                } else {
+                    result = changed
+                }
                 continue
             }
             if let children = stacks[id] {
@@ -3236,9 +3357,11 @@ extension CanvasView {
                 for childID in children {
                     guard let child = byID[childID] else { continue }
                     if let adjustment = child.adjustment {
+                        prints.append(adjustmentPrint(child, adjustment))
                         guard let changed = adjusted(group, by: child, adjustment: adjustment, folders: false) else { return nil }
                         group = changed
                     } else if let image = own(child) {
+                        prints.append("layer \(childID) \(session.displayedBlendMode(for: child))")
                         group = GPUBlend.blend(image, over: group, mode: session.displayedBlendMode(for: child))
                     } else if unsupported { return nil }
                     group = drafts(after: childID, over: group)

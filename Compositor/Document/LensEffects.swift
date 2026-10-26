@@ -286,7 +286,9 @@ private nonisolated enum LensOptics {
     }
 
     /// Thin spikes from each light, as an aperture's blades diffract it: fading quickly from the light, and a little
-    /// longer in red than in blue, as diffraction spreads longer waves farther.
+    /// longer in red than in blue, as diffraction spreads longer waves farther. Each direction's work is shared: the
+    /// picture turned once, each length's lights spread once for all three colors, and the spikes summed before
+    /// turning back once.
     static func starburst(_ image: CIImage, _ settings: LensEffectSettings, side: CGFloat) -> CIImage {
         let light = sources(image, threshold: settings.threshold / 100, side: side)
         let reach = side * settings.starLength / 100, thin = max(0.5, side * 0.0006)
@@ -294,14 +296,21 @@ private nonisolated enum LensOptics {
         var rays = CIImage.empty()
         for spoke in 0..<spokes {
             let theta = settings.starAngle * .pi / 180 + Double(spoke) * .pi / Double(spokes)
+            let turned = light.transformed(by: CGAffineTransform(rotationAngle: -theta))
+            var spikes = CIImage.empty()
             for (fraction, weight) in [(0.04, 1.8), (0.12, 0.9), (0.35, 0.35), (1.0, 0.1)] {
+                // Each light drawn out along the spike first, so a small light spikes as a big one does.
+                let width = max(thin * 2, reach * fraction) * 0.8
+                let spread = width >= 3 ? turned.applyingFilter("CIMorphologyRectangleMaximum", parameters: [
+                    "inputWidth": min(301, Int(width) | 1), "inputHeight": 1]) : turned
+                let gain = weight * settings.starAmount / 50
                 for (channel, stretch) in [(0, 1.0), (1, 0.9), (2, 0.8)] {
                     let along = max(thin * 2, reach * fraction * stretch)
-                    let gain = weight * settings.starAmount / 50
-                    let blurred = streak(light, angle: theta, along: along, across: thin, spread: along * 0.8)
-                    rays = add(scaled(blurred, channel == 0 ? gain : 0, channel == 1 ? gain : 0, channel == 2 ? gain : 0), to: rays)
+                    let blurred = streak(spread, angle: 0, along: along, across: thin)
+                    spikes = add(scaled(blurred, channel == 0 ? gain : 0, channel == 1 ? gain : 0, channel == 2 ? gain : 0), to: spikes)
                 }
             }
+            rays = add(spikes.transformed(by: CGAffineTransform(rotationAngle: theta)), to: rays)
         }
         return gamma(add(rays, to: linear(image)))
     }
