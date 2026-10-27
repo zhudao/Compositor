@@ -127,7 +127,7 @@ struct FilterLayerTests {
             default: #expect(layer.filterLayer.lens?.effect == .mist && layer.filterLayer.lens?.mistStrength == 90)
             }
             let snapshot = try #require(session.projectSnapshot())
-            #expect(snapshot.manifest.version == 18)
+            #expect(snapshot.manifest.version == ProjectManifest.current)
             let after = try reader(try await ImageExporter.shared.render(snapshot).image)
             let changed = (0..<80).contains { x in (0..<60).contains { y in after(x, y) != before(x, y) } }
             #expect(changed, "\(kind) changes the image")
@@ -194,6 +194,48 @@ struct FilterLayerTests {
         let image = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
         for kind in [AdjustmentKind.lensEffects] + (MetalFinishing.shared == nil ? [] : [.vignette, .tonalContrast]) {
             #expect(GPUAdjustment.apply(LayerAdjustment(kind: kind), to: image, scale: 1, mapping: .identity) != nil, "\(kind)")
+        }
+    }
+
+    /// Sharpen brings out edges as a filter and as a layer, the same on the canvas's GPU as in the export, and a Sharpen
+    /// layer needs version 19.
+    @Test func sharpenBringsOutEdgesAndSaves() async throws {
+        let context = try BrushRaster.context(width: 40, height: 20, mask: false)
+        context.setFillColor(CGColor(srgbRed: 0.3, green: 0.3, blue: 0.3, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 40, height: 20))
+        context.setFillColor(CGColor(srgbRed: 0.7, green: 0.7, blue: 0.7, alpha: 1))
+        context.fill(CGRect(x: 20, y: 0, width: 20, height: 20))
+        let edge = try #require(context.makeImage())
+        var adjustment = LayerAdjustment(kind: .sharpen)
+        adjustment.filterLayer.sharpen = SharpenLayerSettings()
+        adjustment.filterLayer.sharpen?.amount = 200
+        adjustment.filterLayer.sharpen?.radius = 2
+        let pixel = try reader(try adjustment.apply(edge))
+        let before = try reader(edge)
+        #expect(pixel(18, 10)[0] < before(18, 10)[0] - 5, "darker just before the edge: \(pixel(18, 10))")
+        #expect(pixel(21, 10)[0] > before(21, 10)[0] + 5, "lighter just after it: \(pixel(21, 10))")
+        #expect(pixel(5, 10) == before(5, 10), "flat areas stay as they are")
+        let gpu = try #require(GPUAdjustment.apply(adjustment, to: CIImage(cgImage: edge), scale: 1, mapping: .identity))
+        let shown = try reader(try #require(PixelAdjust.ciContext.createCGImage(gpu, from: CGRect(x: 0, y: 0, width: 40, height: 20),
+                                                                                format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)))
+        for x in [17, 18, 19, 20, 21, 22] { #expect(zip(shown(x, 10), pixel(x, 10)).allSatisfy { abs($0 - $1) <= 2 }, "canvas at \(x)") }
+
+        let session = EditorSession()
+        session.createDocument(width: 40, height: 20)
+        session.insert(ImportedImage(image: edge, thumbnail: edge, name: "Edge"))
+        session.addAdjustment(.sharpen)
+        session.adjustmentEditingID = nil
+        session.updateAdjustment(try #require(session.activeLayerID), value: adjustment)
+        let snapshot = try #require(session.projectSnapshot())
+        #expect(snapshot.manifest.version == 20)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Sharpen-\(UUID()).comp")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try await ProjectStore.shared.save(snapshot, to: url)
+        #expect(try await ProjectStore.shared.load(from: url).manifest.layers.last?.adjustment == adjustment)
+        var older = snapshot.manifest
+        older.version = 18
+        await #expect(throws: (any Error).self) {
+            try await ProjectStore.shared.save(ProjectSnapshot(manifest: older, images: snapshot.images), to: url)
         }
     }
 }

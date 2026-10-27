@@ -172,6 +172,11 @@ struct FilterSheet: View {
                 control("Feather", \.vignetteFeather, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                 control("Highlights", \.vignetteHighlights, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                     .help("Protect bright areas near the edge")
+            case .sharpen:
+                control("Amount", \.sharpenAmount, range: 0...300, unit: "%", decimals: 0, logarithmic: false)
+                    .help("How strongly edges and fine detail are brought out")
+                control("Radius", \.sharpenRadius, range: 0.1...20, unit: "px", decimals: 1, logarithmic: true)
+                    .help("How fine the detail it sharpens: small for crisp texture, larger for a punchier look")
             case .bloomGlow:
                 control("Amount", \.bloomAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                 control("Radius", \.bloomRadius, range: 1...150, unit: "px", decimals: 0, logarithmic: true)
@@ -406,6 +411,8 @@ struct FilterSheet: View {
                 .help("Which way the copies step")
             control("Blur", \.lens.prismBlur, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                 .help("Soften the copies, more the farther they're pushed")
+            control("Fringe", \.lens.prismFringe, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("Split each copy's red and blue apart, as glass does; 0 keeps the copies crisp")
             HStack(spacing: 10) {
                 Text("Direction")
                 Picker("Direction", selection: Binding(get: { settings.lens.prismBothWays }, set: { new in update { $0.lens.prismBothWays = new } })) {

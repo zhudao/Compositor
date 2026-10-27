@@ -5,6 +5,10 @@ enum ToolHeaderStyle {
     static let height: CGFloat = 42
     static let titleFont = Font.system(size: 13, weight: .semibold)
     static let controlFont = Font.system(size: 12)
+    /// Number boxes sized for their digits, at the bar's 12-point text (7.6 points a digit) and a field border's 8 points
+    /// of padding: three for a selection's amounts, five for the zoom.
+    static let threeDigits: CGFloat = 31
+    static let fiveDigits: CGFloat = 46
 }
 
 extension View {

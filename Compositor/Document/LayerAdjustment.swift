@@ -9,10 +9,11 @@ nonisolated enum AdjustmentKind: String, Codable, CaseIterable, Sendable {
     case blackWhite = "Black & White", colorBalance = "Color Balance"
     case progressiveBlur = "Progressive Blur", bloomGlow = "Bloom / Glow", rgbSplit = "RGB Split"
     case vignette = "Vignette", lensEffects = "Lens Effects", tonalContrast = "Tonal Contrast"
+    case sharpen = "Sharpen"
     /// The menus' two groups, each in the order of the menu it comes from: the Image menu's color adjustments, then
     /// the Filter menu's filters.
     static let imageAdjustments: [Self] = [.curves, .levels, .hsv, .blackWhite, .colorBalance, .exposure, .gradientMap, .grain, .invert]
-    static let filters: [Self] = [.gaussianBlur, .motionBlur, .progressiveBlur, .addNoise, .vignette, .bloomGlow, .rgbSplit,
+    static let filters: [Self] = [.gaussianBlur, .motionBlur, .progressiveBlur, .sharpen, .addNoise, .vignette, .bloomGlow, .rgbSplit,
                                   .lensEffects, .tonalContrast]
     var symbol: String {
         switch self {
@@ -34,6 +35,7 @@ nonisolated enum AdjustmentKind: String, Codable, CaseIterable, Sendable {
         case .vignette: return "circle.dashed.inset.filled"
         case .lensEffects: return "camera.aperture"
         case .tonalContrast: return "circle.lefthalf.striped.horizontal"
+        case .sharpen: return "triangle.lefthalf.filled"
         }
     }
     /// The filter panel that edits this kind; Levels and Hue/Saturation have panels of their own.
@@ -56,6 +58,7 @@ nonisolated enum AdjustmentKind: String, Codable, CaseIterable, Sendable {
         case .vignette: return .vignette
         case .lensEffects: return .lensEffects
         case .tonalContrast: return .tonalContrast
+        case .sharpen: return .sharpen
         // Hue/Saturation and Levels have panels of their own; Invert has nothing to set.
         case .hsv, .levels, .invert: return nil
         }
@@ -151,6 +154,7 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
         case .progressiveBlur, .bloomGlow, .rgbSplit:
             return FilterEdit.blurMargin(kind.filterKind ?? .bloomGlow, filterLayer.applied(to: FilterSettings()))
         case .tonalContrast: return CGFloat(filterLayer.resolvedTonal.radius * 3 + 2)
+        case .sharpen: return CGFloat(filterLayer.resolvedSharpen.radius * 3 + 2)
         // A light anywhere can streak or scatter across the whole picture: a change redraws everything.
         case .lensEffects: return 1_000_000
         default: return 0
@@ -186,7 +190,7 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
     /// Exposure exactly on HDR ones; through its color lookup when its channels mix; otherwise run several times and
     /// read between (`DeepLayer.run`).
     func applySixteenBit(_ image: CGImage, region: CGRect? = nil, scale: CGFloat = 1, document: CGSize? = nil) throws -> CGImage {
-        if [.gaussianBlur, .motionBlur, .progressiveBlur, .bloomGlow, .lensEffects].contains(kind) {
+        if [.gaussianBlur, .motionBlur, .progressiveBlur, .bloomGlow, .lensEffects, .sharpen].contains(kind) {
             return try apply(image, region: region, scale: scale, sixteenBit: true, document: document)
         }
         if kind == .exposure, DeepLayer.isHDR(image) { return try DeepLayer.exposure(image, exposure) }
@@ -233,7 +237,7 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
                                                                   y: $0.minY * CGFloat(image.height) / max(1, $0.height)) } ?? .zero)
             job.sixteenBit = sixteenBit && filterKind != .addNoise
             return try PixelFilter.run(job)
-        case .progressiveBlur, .bloomGlow, .rgbSplit, .vignette, .lensEffects, .tonalContrast:
+        case .progressiveBlur, .bloomGlow, .rgbSplit, .vignette, .lensEffects, .tonalContrast, .sharpen:
             // The positions are the document's: `region` places this image in it.
             let region = region ?? CGRect(x: 0, y: 0, width: image.width, height: image.height)
             let mapping = CGAffineTransform(a: region.width / CGFloat(max(1, image.width)), b: 0, c: 0,
@@ -312,6 +316,8 @@ nonisolated struct FilterLayerSettings: Codable, Equatable, Sendable {
     var vignette: VignetteLayerSettings?
     var tonal: TonalLayerSettings?
     var lens: LensEffectSettings?
+    var sharpen: SharpenLayerSettings?
+    var resolvedSharpen: SharpenLayerSettings { sharpen ?? SharpenLayerSettings() }
     var resolvedVignette: VignetteLayerSettings { vignette ?? VignetteLayerSettings() }
     var resolvedTonal: TonalLayerSettings { tonal ?? TonalLayerSettings() }
 
@@ -338,6 +344,7 @@ nonisolated struct FilterLayerSettings: Codable, Equatable, Sendable {
         if let vignette { settings = vignette.applied(to: settings) }
         if let tonal { settings = tonal.applied(to: settings) }
         if let lens { settings.lens = lens }
+        if let sharpen { settings = sharpen.applied(to: settings) }
         return settings
     }
 
@@ -345,11 +352,12 @@ nonisolated struct FilterLayerSettings: Codable, Equatable, Sendable {
     var isValid: Bool {
         let points = [progressiveStart, progressiveEnd, rgbSplitCenter].compactMap { $0 }
         var shared = self
-        shared.vignette = nil; shared.tonal = nil; shared.lens = nil
+        shared.vignette = nil; shared.tonal = nil; shared.lens = nil; shared.sharpen = nil
         return shared == Self(shared.applied(to: FilterSettings())) && points.allSatisfy { $0.x.isFinite && $0.y.isFinite }
             && vignette.map { $0 == VignetteLayerSettings($0.applied(to: FilterSettings())) } ?? true
             && tonal.map { $0 == TonalLayerSettings($0.applied(to: FilterSettings())) } ?? true
             && lens.map { $0 == $0.normalized } ?? true
+            && sharpen.map { $0 == SharpenLayerSettings($0.applied(to: FilterSettings())) } ?? true
     }
 }
 
@@ -396,6 +404,24 @@ nonisolated struct TonalLayerSettings: Codable, Equatable, Sendable {
         var settings = settings
         settings.tonalAmount = amount; settings.tonalRadius = radius; settings.tonalShadows = shadows
         settings.tonalMidtones = midtones; settings.tonalHighlights = highlights
+        return settings
+    }
+}
+
+/// A Sharpen layer's settings, as the filter's (see `FilterSettings`).
+nonisolated struct SharpenLayerSettings: Codable, Equatable, Sendable {
+    var amount: Double = 100
+    var radius: Double = 1
+
+    init() {}
+    init(_ settings: FilterSettings) {
+        let settings = settings.normalized
+        amount = settings.sharpenAmount; radius = settings.sharpenRadius
+    }
+
+    func applied(to settings: FilterSettings) -> FilterSettings {
+        var settings = settings
+        settings.sharpenAmount = amount; settings.sharpenRadius = radius
         return settings
     }
 }

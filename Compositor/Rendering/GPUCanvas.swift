@@ -627,6 +627,12 @@ nonisolated enum GPUAdjustment {
         case .vignette:
             let canvas = document.map { CGRect(origin: .zero, size: $0).applying(mapping) } ?? image.extent
             return MetalFinishing.vignette(image, canvas: canvas, adjustment.filterLayer.resolvedVignette)
+        case .sharpen:
+            let sharpen = adjustment.filterLayer.resolvedSharpen
+            guard sharpen.amount > 0 else { return image }
+            return image.clampedToExtent().applyingFilter("CIUnsharpMask", parameters: [
+                kCIInputRadiusKey: sharpen.radius * scale, kCIInputIntensityKey: sharpen.amount / 100,
+            ]).cropped(to: image.extent)
         case .tonalContrast:
             let tonal = adjustment.filterLayer.resolvedTonal
             return MetalFinishing.tonalContrast(image, radius: tonal.radius * scale, tonal)
