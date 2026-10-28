@@ -3,18 +3,16 @@
   <channel>
     <title>Compositor</title>
     <item>
-      <title>Version 1.5.11</title>
-      <pubDate>Mon, 26 Oct 2026 23:09:51 +0000</pubDate>
-      <sparkle:version>57</sparkle:version>
-      <sparkle:shortVersionString>1.5.11</sparkle:shortVersionString>
+      <title>Version 1.5.12</title>
+      <pubDate>Tue, 27 Oct 2026 18:39:21 +0000</pubDate>
+      <sparkle:version>58</sparkle:version>
+      <sparkle:shortVersionString>1.5.12</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.11</link>
-      <changes><![CDATA[Prism has a new Fringe slider: set it to 0 for crisp copies with no color split
-Painting a Lens Effects layer's mask no longer makes the effect shift or soften while you paint
-The color picker's OK and Cancel buttons fix rare bug that left the picker stuck open
-Holding Space to pan now shows the hand steadily, with no cursor flicker in the selection tools and the eyedropper included
-The Hand tool has a new open-palm icon]]></changes>
-      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.11/Compositor.dmg" sparkle:edSignature="ZL2xlk3nag/feAvQKv5/XsQJ3qFr1i+jSDBGkShWtKCDk56QGixtLKV2ByeAfQ3bewN82EGuZ8XeQDFhUn8iBA==" length="8614903" type="application/octet-stream"/>
+      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.12</link>
+      <changes><![CDATA[New Rim Light filter: add up to three colored lights behind your subject, each with its own angle, strength, width and choke
+Glow lets the light bleed into the air around the subject and wrap over its edges, so it sits in the light instead of looking cut out
+Loose strands of hair catch the light, while busy backgrounds like crowds or rocks stay untouched]]></changes>
+      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.12/Compositor.dmg" sparkle:edSignature="qTOWfGHQb2vCn4ymiK12dsTFX15fCYZnXsgyfw6CH3tZ9W94oRP/d6/zxAwc/MA9wUmWyBufrdcO58OjNByaDQ==" length="8662558" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>
